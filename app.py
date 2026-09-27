@@ -139,8 +139,9 @@ with tab1:
             st.markdown("### 🔍 ตรวจสอบยอดก่อนบันทึก")
             if service_type == "รับกลางไอดี":
                 fee = calculate_middleman_fee(income)
-                profit = fee + (40 if is_yok else 0) + (5 if is_no_note else 0)
-                expense = income - fee
+                extra_fee = (40 if is_yok else 0) + (5 if is_no_note else 0)
+                profit = fee + extra_fee
+                expense = income - fee - extra_fee
             else:
                 fee, profit, expense = 0, income, 0
             
