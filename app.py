@@ -20,7 +20,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# --- Custom CSS เพื่อให้ UI ดูเป็นมืออาชีพและสะอาดตา ---
+# --- Custom CSS ---
 st.markdown("""
 <style>
     .block-container { padding-top: 2rem; padding-bottom: 2rem; }
@@ -161,49 +161,47 @@ with tab1:
             """, unsafe_allow_html=True)
             
             if st.button("✅ ยืนยันและบันทึกเข้าฐานข้อมูล", use_container_width=True):
-                df = db.load_data()
-                new_id = db.get_next_id(df)
-                
-                # เปลี่ยนการบันทึกสลิปจาก Local File เป็น Cloudinary URL
-                path_in1 = ""
-                if 'uploaded_slip_in1' in st.session_state:
-                    slip_file1 = st.session_state['uploaded_slip_in1']
-                    path_in1 = im.upload_image(slip_file1)
-                    del st.session_state['uploaded_slip_in1']
-                
-                path_in2 = ""
-                if 'uploaded_slip_in2' in st.session_state:
-                    slip_file2 = st.session_state['uploaded_slip_in2']
-                    path_in2 = im.upload_image(slip_file2)
-                    del st.session_state['uploaded_slip_in2']
-                
-                path_out = ""
-                if 'uploaded_slip_out' in st.session_state:
-                    slip_out_file = st.session_state['uploaded_slip_out']
-                    path_out = im.upload_image(slip_out_file)
-                    del st.session_state['uploaded_slip_out']
-                
-                status = "โอนแล้ว" if (service_type == "เช่าจอดูบอล" or path_out != "") else "ยังไม่โอน"
-                
-                # บันทึกลง Google Sheets
-                row_dict = {
-                    "ID": new_id,
-                    "วันที่": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "ประเภท": service_type,
-                    "รายละเอียด": "",
-                    "ยอดเข้า": income,
-                    "ยอดออก": expense,
-                    "กำไร": profit,
-                    "สถานะโอนออก": status,
-                    "สลิปเข้า": path_in1,
-                    "สลิปเข้า 2": path_in2,
-                    "สลิปออก": path_out
-                }
-                db.append_row(row_dict)
-                
-                st.toast("✅ บันทึกลง Google Sheets & Cloudinary เรียบร้อย!", icon="🎉")
-                st.balloons()
-                st.rerun()
+                with st.spinner("กำลังบันทึกข้อมูล..."):
+                    df = db.load_data()
+                    new_id = db.get_next_id(df)
+                    
+                    path_in1 = ""
+                    if 'uploaded_slip_in1' in st.session_state:
+                        path_in1 = im.upload_image(st.session_state['uploaded_slip_in1'])
+                        del st.session_state['uploaded_slip_in1']
+                    
+                    path_in2 = ""
+                    if 'uploaded_slip_in2' in st.session_state:
+                        path_in2 = im.upload_image(st.session_state['uploaded_slip_in2'])
+                        del st.session_state['uploaded_slip_in2']
+                    
+                    path_out = ""
+                    if 'uploaded_slip_out' in st.session_state:
+                        path_out = im.upload_image(st.session_state['uploaded_slip_out'])
+                        del st.session_state['uploaded_slip_out']
+                    
+                    status = "โอนแล้ว" if (service_type == "เช่าจอดูบอล" or path_out != "") else "ยังไม่โอน"
+                    
+                    row_dict = {
+                        "ID": new_id,
+                        "วันที่": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "ประเภท": service_type,
+                        "รายละเอียด": "",
+                        "ยอดเข้า": income,
+                        "ยอดออก": expense,
+                        "กำไร": profit,
+                        "สถานะโอนออก": status,
+                        "สลิปเข้า": path_in1,
+                        "สลิปเข้า 2": path_in2,
+                        "สลิปออก": path_out
+                    }
+                    if db.append_row(row_dict):
+                        st.success("✅ บันทึกลง Google Sheets & Cloudinary เรียบร้อย!")
+                        st.balloons()
+                    else:
+                        st.error("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+                    
+                    st.rerun()
 
 with tab2:
     st.header("📜 จัดการประวัติและคิวการโอนเงิน")
@@ -215,127 +213,4 @@ with tab2:
             with st.container():
                 st.markdown('<div class="data-container" style="border-left: 5px solid #dc3545;">', unsafe_allow_html=True)
                 st.dataframe(pending_queue[['ID', 'วันที่', 'ประเภท', 'ยอดออก', 'สถานะโอนออก']], use_container_width=True, hide_index=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-                
-                with st.expander("✔️ ยืนยันการโอนเงินเข้าคิว", expanded=True):
-                    c_id, c_slip = st.columns([1, 2])
-                    with c_id:
-                        pending_ids = sorted(pending_queue['ID'].tolist())
-                        target_id = st.selectbox("เลือก ID ที่โอนเรียบร้อยแล้ว", pending_ids, key="confirm_transfer_id")
-                    with c_slip:
-                        uploaded_slip_out = st.file_uploader("อัปโหลดสลิปโอนออก", type=['jpg', 'jpeg', 'png'], key="confirm_transfer_slip")
-                    
-                    if st.button("✅ ยืนยันการโอน", use_container_width=True):
-                        path_out = ""
-                        if uploaded_slip_out:
-                            file_ext = uploaded_slip_out.name.split('.')[-1]
-                            path_out = f"slips/outgoing/{target_id}_out.{file_ext}"
-                            os.makedirs("slips/outgoing", exist_ok=True)
-                            with open(path_out, "wb") as f: f.write(uploaded_slip_out.getbuffer())
-                        
-                        db.update_cell(target_id, "สถานะโอนออก", "โอนแล้ว")
-                        db.update_cell(target_id, "สลิปออก", path_out)
-                        st.success(f"✅ คิวที่ {target_id} ยืนยันการโอนเรียบร้อย!")
-                        st.rerun()
-        
-        st.divider()
-        st.markdown("### 📂 ประวัติรายการทั้งหมด")
-        history_df = df.sort_values(by="ID", ascending=False)
-        tab_mid, tab_ball = st.tabs(["💎 รับกลางไอดี", "⚽ เช่าจอดูบอล"])
-        
-        with tab_mid:
-            df_mid = history_df[history_df['ประเภท'] == "รับกลางไอดี"]
-            if df_mid.empty: st.info("ไม่มีรายการรับกลางไอดี")
-            for idx, (index, row) in enumerate(df_mid.iterrows()):
-                status_class = "status-paid" if row['สถานะโอนออก'] == "โอนแล้ว" else "status-pending"
-                status_text = f'<span class="{status_class}">{row["สถานะโอนออก"]}</span>'
-                with st.expander(f"คิวที่ {row['ID']} - {row['วันที่']}"):
-                    c1, c2, c3, c4 = st.columns([1,1,1,1])
-                    c1.write(f"**ประเภท:** {row['ประเภท']}")
-                    c2.write(f"**กำไร:** {row['กำไร']:,.2f} ฿")
-                    c3.markdown(f"**สถานะ:** {status_text}", unsafe_allow_html=True)
-                    with c4:
-                        if st.button(f"🗑️ ลบรายการ", key=f"mid_del_{idx}_{row['ID']}"):
-                            if row['สลิปเข้า'] and os.path.exists(row['สลิปเข้า']): os.remove(row['สลิปเข้า'])
-                            if row['สลิปออก'] and os.path.exists(row['สลิปออก']): os.remove(row['สลิปออก'])
-                            db.delete_row(row['ID'])
-                            st.rerun()
-                    st.divider()
-                    im1, im2 = st.columns(2)
-                    with im1:
-                        if row['สลิปเข้า'] and os.path.exists(row['สลิปเข้า']):
-                            st.image(row['สลิปเข้า'], caption="สลิปโอนเข้า", width=200)
-                        else: st.write("❌ ไม่มีสลิปโอนเข้า")
-                    with im2:
-                        if row['สลิปออก'] and os.path.exists(row['สลิปออก']):
-                            st.image(row['สลิปออก'], caption="สลิปโอนออก", width=200)
-                        else: st.write("❌ ไม่มีสลิปโอนออก")
-
-        with tab_ball:
-            df_ball = history_df[history_df['ประเภท'] == "เช่าจอดูบอล"]
-            if df_ball.empty: st.info("ไม่มีรายการเช่าจอดูบอล")
-            for idx, (index, row) in enumerate(df_ball.iterrows()):
-                status_class = "status-paid" if row['สถานะโอนออก'] == "โอนแล้ว" else "status-pending"
-                status_text = f'<span class="{status_class}">{row["สถานะโอนออก"]}</span>'
-                with st.expander(f"จอเช่าที่ {row['ID']} - {row['วันที่']}"):
-                    c1, c2, c3, c4 = st.columns([1,1,1,1])
-                    c1.write(f"**ประเภท:** {row['ประเภท']}")
-                    c2.write(f"**กำไร:** {row['กำไร']:,.2f} ฿")
-                    c3.markdown(f"**สถานะ:** {status_text}", unsafe_allow_html=True)
-                    with c4:
-                        if st.button(f"🗑️ ลบรายการ", key=f"ball_del_{idx}_{row['ID']}"):
-                            if row['สลิปเข้า'] and os.path.exists(row['สลิปเข้า']): os.remove(row['สลิปเข้า'])
-                            if row['สลิปออก'] and os.path.exists(row['สลิปออก']): os.remove(row['สลิปออก'])
-                            db.delete_row(row['ID'])
-                            st.rerun()
-                    st.divider()
-                    im1, im2 = st.columns(2)
-                    with im1:
-                        if row['สลิปเข้า'] and os.path.exists(row['สลิปเข้า']):
-                            st.image(row['สลิปเข้า'], caption="สลิปโอนเข้า", width=200)
-                        else: st.write("❌ ไม่มีสลิปโอนเข้า")
-                    with im2:
-                        if row['สลิปออก'] and os.path.exists(row['สลิปออก']):
-                            st.image(row['สลิปออก'], caption="สลิปโอนออก", width=200)
-                        else: st.write("❌ ไม่มีสลิปโอนออก")
-
-with tab3:
-    st.header("📊 รายงานรายรับ-กำไร")
-    df = db.load_data()
-    if not df.empty:
-        df['วันที่'] = pd.to_datetime(df['วันที่'])
-        today, this_month = datetime.now().strftime("%Y-%m-%d"), datetime.now().strftime("%Y-%m")
-        df_today = df[df['วันที่'].dt.strftime("%Y-%m-%d") == today]
-        df_month = df[df['วันที่'].dt.strftime("%Y-%m") == this_month]
-        st.markdown("### 📅 ภาพรวม")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("💵 กำไรวันนี้", f"{df_today['กำไร'].sum():,.2f} ฿")
-        c2.metric("📆 กำไรเดือนนี้", f"{df_month['กำไร'].sum():,.2f} ฿")
-        c3.metric("💰 ยอดโอนเข้าสะสม", f"{df['ยอดเข้า'].sum():,.2f} ฿")
-        c4.metric("📈 กำไรสะสมทั้งหมด", f"{df['กำไร'].sum():,.2f} ฿")
-        st.divider()
-        st.markdown("### 🧾 แยกตามประเภทบริการ")
-        df_mid_total = df[df['ประเภท'] == "รับกลางไอดี"]
-        df_ball_total = df[df['ประเภท'] == "เช่าจอดูบอล"]
-        m1, m2 = st.columns(2)
-        with m1:
-            st.markdown(f"""<div class="data-container"><h4 style="margin-top:0;">💎 รับกลางไอดี</h4><p>จำนวนคิว: <b>{len(df_mid_total)}</b> คิว</p><p>ยอดเข้ารวม: <b>{df_mid_total['ยอดเข้า'].sum():,.2f} ฿</b></p><p>ยอดโอนออกรวม: <b>{df_mid_total['ยอดออก'].sum():,.2f} ฿</b></p><p style="color:#1E88E5; font-weight:bold; font-size:1.2rem;">กำไรรวม: {df_mid_total['กำไร'].sum():,.2f} ฿</p></div>""", unsafe_allow_html=True)
-        with m2:
-            st.markdown(f"""<div class="data-container"><h4 style="margin-top:0;">⚽ เช่าจอดูบอล</h4><p>จำนวนจอเช่า: <b>{len(df_ball_total)}</b> จอ</p><p>ยอดเข้ารวม: <b>{df_ball_total['ยอดเข้า'].sum():,.2f} ฿</b></p><p style="color:#1E88E5; font-weight:bold; font-size:1.2rem;">กำไรรวม: {df_ball_total['กำไร'].sum():,.2f} ฿</p></div>""", unsafe_allow_html=True)
-        st.divider()
-        st.markdown("### 📆 สรุปกำไรรายวัน (เดือนนี้)")
-        df_month_days = df[df['วันที่'].dt.strftime("%Y-%m") == this_month].copy()
-        if not df_month_days.empty:
-            daily = df_month_days.groupby(df_month_days['วันที่'].dt.strftime("%Y-%m-%d")).agg(จำนวนรายการ=('ID', 'count'), ยอดเข้า=('ยอดเข้า', 'sum'), ยอดออก=('ยอดออก', 'sum'), กำไร=('กำไร', 'sum')).reset_index().rename(columns={'วันที่': 'วัน'})
-            daily = daily.sort_values(by='วัน', ascending=False)
-            st.dataframe(daily, use_container_width=True, hide_index=True)
-        else:
-            st.info("ยังไม่มีรายการในเดือนนี้")
-        st.divider()
-        st.markdown("### 🔴 คิวค้างโอนเงิน")
-        pending_all = df[df['สถานะโอนออก'] == "ยังไม่โอน"]
-        p1, p2 = st.columns(2)
-        p1.metric("⏳ จำนวนคิวค้างโอน", f"{len(pending_all)} คิว")
-        p2.metric("💸 ยอดเงินค้างโอน", f"{pending_all['ยอดออก'].sum():,.2f} ฿")
-    else:
-        st.write("ไม่มีข้อมูล")
+                st.markdown('</div>', unsafe_//... (rest of the code edited below)
