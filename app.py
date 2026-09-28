@@ -6,8 +6,9 @@ import google.generativeai as genai
 from PIL import Image
 import base64
 
-# นำเข้าตัวเชื่อมต่อ Google Sheets
+# นำเข้าตัวเชื่อมต่อ Google Sheets และ Cloudinary
 import sheets_client as db
+import image_manager as im
 
 # ============================================================
 # 1. การตั้งค่าหน้าเว็บ (Page Config)
