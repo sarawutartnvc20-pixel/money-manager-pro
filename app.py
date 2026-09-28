@@ -116,18 +116,23 @@ with tab1:
                     with c_opt2: is_no_note = st.checkbox("ลืมเขียนโน๊ต (+5.-)")
             
             with st.expander("🖼️ อัปโหลดสลิป", expanded=True):
-                uploaded_file = st.file_uploader("เลือกสลิปโอนเข้า", type=['jpg', 'jpeg', 'png'])
-                if uploaded_file:
-                    img = Image.open(uploaded_file)
-                    st.image(img, width=250)
-                    if st.button("🔍 ให้ AI อ่านยอด"):
+                uploaded_file1 = st.file_uploader("เลือกสลิปโอนเข้า (ใบที่ 1)", type=['jpg', 'jpeg', 'png'], key="slip_in_1")
+                if uploaded_file1:
+                    img1 = Image.open(uploaded_file1)
+                    st.image(img1, width=200)
+                    if st.button("🔍 ให้ AI อ่านยอด (ใบที่ 1)"):
                         with st.spinner("กำลังอ่านสลิป..."):
-                            detected_amount = read_slip_with_ai(img)
+                            detected_amount = read_slip_with_ai(img1)
                             if detected_amount: st.session_state['detected_income'] = detected_amount
-                    income = st.number_input("ยอดที่ AI อ่านได้ (แก้ไขได้)", value=st.session_state.get('detected_income', 0.0))
-                    st.session_state['uploaded_slip_in'] = uploaded_file
-                else:
-                    income = 0.0
+                    st.session_state['uploaded_slip_in1'] = uploaded_file1
+                
+                uploaded_file2 = st.file_uploader("เลือกสลิปโอนเข้า (ใบที่ 2 - ถ้ามี)", type=['jpg', 'jpeg', 'png'], key="slip_in_2")
+                if uploaded_file2:
+                    img2 = Image.open(uploaded_file2)
+                    st.image(img2, width=200)
+                    st.session_state['uploaded_slip_in2'] = uploaded_file2
+                
+                income = st.number_input("ยอดที่ AI อ่านได้ (แก้ไขได้)", value=st.session_state.get('detected_income', 0.0))
                 
                 if service_type == "รับกลางไอดี":
                     st.divider()
@@ -158,23 +163,23 @@ with tab1:
                 df = db.load_data()
                 new_id = db.get_next_id(df)
                 
-                # จัดการไฟล์สลิป (ยังบันทึกในเครื่อง/cloud storage เดิม)
-                path_in = ""
-                if 'uploaded_slip_in' in st.session_state:
-                    slip_file = st.session_state['uploaded_slip_in']
-                    file_ext = slip_file.name.split('.')[-1]
-                    path_in = f"slips/incoming/{new_id}_in.{file_ext}"
-                    os.makedirs("slips/incoming", exist_ok=True)
-                    with open(path_in, "wb") as f: f.write(slip_file.getbuffer())
-                    del st.session_state['uploaded_slip_in']
+                # เปลี่ยนการบันทึกสลิปจาก Local File เป็น Cloudinary URL
+                path_in1 = ""
+                if 'uploaded_slip_in1' in st.session_state:
+                    slip_file1 = st.session_state['uploaded_slip_in1']
+                    path_in1 = im.upload_image(slip_file1)
+                    del st.session_state['uploaded_slip_in1']
+                
+                path_in2 = ""
+                if 'uploaded_slip_in2' in st.session_state:
+                    slip_file2 = st.session_state['uploaded_slip_in2']
+                    path_in2 = im.upload_image(slip_file2)
+                    del st.session_state['uploaded_slip_in2']
                 
                 path_out = ""
                 if 'uploaded_slip_out' in st.session_state:
                     slip_out_file = st.session_state['uploaded_slip_out']
-                    file_ext_out = slip_out_file.name.split('.')[-1]
-                    path_out = f"slips/outgoing/{new_id}_out.{file_ext_out}"
-                    os.makedirs("slips/outgoing", exist_ok=True)
-                    with open(path_out, "wb") as f: f.write(slip_out_file.getbuffer())
+                    path_out = im.upload_image(slip_out_file)
                     del st.session_state['uploaded_slip_out']
                 
                 status = "โอนแล้ว" if (service_type == "เช่าจอดูบอล" or path_out != "") else "ยังไม่โอน"
@@ -189,12 +194,13 @@ with tab1:
                     "ยอดออก": expense,
                     "กำไร": profit,
                     "สถานะโอนออก": status,
-                    "สลิปเข้า": path_in,
+                    "สลิปเข้า": path_in1,
+                    "สลิปเข้า 2": path_in2,
                     "สลิปออก": path_out
                 }
                 db.append_row(row_dict)
                 
-                st.toast("✅ บันทึกลง Google Sheets เรียบร้อย!", icon="🎉")
+                st.toast("✅ บันทึกลง Google Sheets & Cloudinary เรียบร้อย!", icon="🎉")
                 st.balloons()
                 st.rerun()
 
