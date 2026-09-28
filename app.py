@@ -1,79 +1,50 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-import os
 import google.generativeai as genai
 from PIL import Image
-import base64
 
 # นำเข้าตัวเชื่อมต่อ Google Sheets และ Cloudinary
 import sheets_client as db
 import image_manager as im
 
 # ============================================================
-# 1. การตั้งค่าหน้าเว็บ (Page Config)
+# 1. Page Config & CSS
 # ============================================================
-st.set_page_config(
-    page_title="Money Manager Pro",
-    page_icon="💰",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+st.set_page_config(page_title="Money Manager Pro", page_icon="💰", layout="wide")
 
-# --- Custom CSS ---
 st.markdown("""
 <style>
     .block-container { padding-top: 2rem; padding-bottom: 2rem; }
-    .data-container {
-        background-color: #ffffff;
-        border-radius: 12px;
-        padding: 20px;
-        border: 1px solid #e0e0e0;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        margin-bottom: 20px;
-    }
-    div[data-testid="stMetricValue"] { 
-        font-size: 1.8rem !important; 
-        font-weight: 700 !important; 
-        color: #1E88E5 !important; 
-    }
-    div[data-testid="stMetricLabel"] { 
-        font-size: 1rem !important; 
-        font-weight: 500 !important; 
-    }
+    .data-container { background-color: #ffffff; border-radius: 12px; padding: 20px; border: 1px solid #e0e0e0; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 20px; }
+    div[data-testid="stMetricValue"] { font-size: 1.8rem !important; font-weight: 700 !important; color: #1E88E5 !important; }
+    div[data-testid="stMetricLabel"] { font-size: 1rem !important; font-weight: 500 !important; }
     .status-paid { color: #28a745; font-weight: bold; }
     .status-pending { color: #dc3545; font-weight: bold; }
-    div[data-testid="stExpander"] details { width: 100%; }
-    div[data-testid="stExpander"] summary { width: 100%; cursor: pointer; }
     button[kind="primary"] { width: 100%; }
     @media only screen and (max-width: 640px) {
         .block-container { padding-top: 1rem; padding-bottom: 1rem; padding-left: 0.6rem; padding-right: 0.6rem; }
         h1 { font-size: 1.6rem !important; }
-        h2, h3 { font-size: 1.15rem !important; }
         div[data-testid="stMetricValue"] { font-size: 1.25rem !important; }
-        div[data-testid="stMetricLabel"] { font-size: 0.85rem !important; }
-        div[data-testid="stButton"] > button,
-        div[data-testid="stDownloadButton"] > button { min-height: 48px; }
-        .stTabs [data-testid="stHorizontalBlock"] { gap: 0.2rem; }
-        .stTabs [data-baseweb="tab"] { font-size: 0.8rem; padding: 8px 10px; }
-        .stTabs [data-baseweb="tab-list"] { gap: 0px; }
-        div[data-testid="stImage"] img { max-width: 100%; height: auto; }
-        div[data-testid="stDataFrame"] { height: auto !important; }
+        div[data-testid="stButton"] > button { min-height: 48px; }
     }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("💰 ระบบจัดการยอดกลาง & ดูบอล (Cloud Version)")
 
+# Gemini Config
 try:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-except Exception:
-    GEMINI_API_KEY = "AQ.Ab8RN6Jdk2tLfdGyn5o_QSeki1L8DZvB0RXHd8WdKM---2BoyA" 
+except:
+    st.error("❌ ไม่พบ GEMINI_API_KEY ใน Secrets")
+    GEMINI_API_KEY = ""
 
-genai.configure(api_key=GEMINI_API_KEY)
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 # ============================================================
-# 2. Logic คำนวณ (Business Logic)
+# 2. Business Logic & AI
 # ============================================================
 def calculate_middleman_fee(price):
     if price <= 1490: return 60
@@ -86,131 +57,186 @@ def calculate_middleman_fee(price):
 
 def read_slip_with_ai(image):
     try:
-        prompt = "Return ONLY the number of the transfer amount in this image."
         model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content([prompt, image])
-        res_text = response.text
-        amount_str = "".join(c for c in res_text if c.isdigit() or c == '.')
-        if amount_str: return float(amount_str)
+        response = model.generate_content(["Return ONLY the number of the transfer amount in this image. Do not include currency symbols or commas.", image])
+        amount_str = "".join(c for c in response.text if c.isdigit() or c == '.')
+        return float(amount_str) if amount_str else None
     except Exception as e:
-        st.error(f"❌ เกิดข้อผิดพลาดในการอ่านสลิป: {e}")
+        st.error(f"AI Error: {e}")
         return None
 
 # ============================================================
-# 3. หน้าจอการทำงาน (UI Layout)
+# 3. UI Tabs
 # ============================================================
 tab1, tab2, tab3 = st.tabs(["📝 บันทึกรายการเข้า", "🗂️ ประวัติและคิว", "📊 สรุปรายรับ-กำไร"])
 
 with tab1:
     st.header("📝 บันทึกรายการเข้า")
-    with st.container():
-        col_input, col_preview = st.columns([1, 1], gap="large")
-        with col_input:
-            st.markdown("### 📥 ข้อมูลการโอนเข้า")
-            with st.expander("⚙️ ตั้งค่าบริการ", expanded=True):
-                service_type = st.selectbox("เลือกบริการ", ["รับกลางไอดี", "เช่าจอดูบอล"])
-                is_yok = False
-                is_no_note = False
-                if service_type == "รับกลางไอดี":
-                    c_opt1, c_opt2 = st.columns(2)
-                    with c_opt1: is_yok = st.checkbox("มีบริการโยกไอดี (+40.-)")
-                    with c_opt2: is_no_note = st.checkbox("ลืมเขียนโน๊ต (+5.-)")
+    col_input, col_preview = st.columns([1, 1], gap="large")
+    
+    with col_input:
+        st.markdown("### 📥 ข้อมูลการโอนเข้า")
+        with st.expander("⚙️ ตั้งค่าบริการ", expanded=True):
+            service_type = st.selectbox("เลือกบริการ", ["รับกลางไอดี", "เช่าจอดูบอล"])
+            is_yok = st.checkbox("มีบริการโยกไอดี (+40.-)") if service_type == "รับกลางไอดี" else False
+            is_no_note = st.checkbox("ลืมเขียนโน๊ต (+5.-)") if service_type == "รับกลางไอดี" else False
+        
+        with st.expander("🖼️ อัปโหลดสลิป", expanded=True):
+            up1 = st.file_uploader("เลือกสลิปโอนเข้า (ใบที่ 1)", type=['jpg','jpeg','png'], key="in1")
+            if up1:
+                st.image(up1, width=200)
+                if st.button("🔍 อ่านยอดใบที่ 1"):
+                    res = read_slip_with_ai(Image.open(up1))
+                    if res: st.session_state['inc_detected'] = res
             
-            with st.expander("🖼️ อัปโหลดสลิป", expanded=True):
-                uploaded_file1 = st.file_uploader("เลือกสลิปโอนเข้า (ใบที่ 1)", type=['jpg', 'jpeg', 'png'], key="slip_in_1")
-                if uploaded_file1:
-                    img1 = Image.open(uploaded_file1)
-                    st.image(img1, width=200)
-                    if st.button("🔍 ให้ AI อ่านยอด (ใบที่ 1)"):
-                        with st.spinner("กำลังอ่านสลิป..."):
-                            detected_amount = read_slip_with_ai(img1)
-                            if detected_amount: st.session_state['detected_income'] = detected_amount
-                    st.session_state['uploaded_slip_in1'] = uploaded_file1
-                
-                uploaded_file2 = st.file_uploader("เลือกสลิปโอนเข้า (ใบที่ 2 - ถ้ามี)", type=['jpg', 'jpeg', 'png'], key="slip_in_2")
-                if uploaded_file2:
-                    img2 = Image.open(uploaded_file2)
-                    st.image(img2, width=200)
-                    st.session_state['uploaded_slip_in2'] = uploaded_file2
-                
-                income = st.number_input("ยอดที่ AI อ่านได้ (แก้ไขได้)", value=st.session_state.get('detected_income', 0.0))
-                
-                if service_type == "รับกลางไอดี":
-                    st.divider()
-                    uploaded_out = st.file_uploader("เลือกสลิปโอนออก (ถ้ามี)", type=['jpg', 'jpeg', 'png'])
-                    if uploaded_out: st.session_state['uploaded_slip_out'] = uploaded_out
-                    elif 'uploaded_slip_out' in st.session_state: del st.session_state['uploaded_slip_out']
-
-        with col_preview:
-            st.markdown("### 🔍 ตรวจสอบยอดก่อนบันทึก")
+            up2 = st.file_uploader("เลือกสลิปโอนเข้า (ใบที่ 2 - ถ้ามี)", type=['jpg','jpeg','png'], key="in2")
+            if up2: st.image(up2, width=200)
+            
+            income = st.number_input("ยอดเงินเข้า", value=st.session_state.get('inc_detected', 0.0))
+            
             if service_type == "รับกลางไอดี":
-                fee = calculate_middleman_fee(income)
-                extra_fee = (40 if is_yok else 0) + (5 if is_no_note else 0)
-                profit = fee + extra_fee
-                expense = income - fee - extra_fee
-            else:
-                fee, profit, expense = 0, income, 0
-            
-            st.markdown(f"""
-            <div class="data-container">
-                <p style="margin-bottom: 10px; font-size: 1.1rem;">💰 <b>ยอดเงินเข้า:</b> {income:,.2f} ฿</p>
-                <p style="margin-bottom: 10px; font-size: 1.1rem;">💸 <b>ยอดต้องโอนออก:</b> {expense:,.2f} ฿</p>
-                <hr style="border: 0; border-top: 1px solid #eee; margin: 15px 0;">
-                <p style="font-size: 1.3rem; color: #1E88E5; font-weight: bold;">📈 กำไรสุทธิ: {profit:,.2f} ฿</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            if st.button("✅ ยืนยันและบันทึกเข้าฐานข้อมูล", use_container_width=True):
-                with st.spinner("กำลังบันทึกข้อมูล..."):
-                    df = db.load_data()
-                    new_id = db.get_next_id(df)
-                    
-                    path_in1 = ""
-                    if 'uploaded_slip_in1' in st.session_state:
-                        path_in1 = im.upload_image(st.session_state['uploaded_slip_in1'])
-                        del st.session_state['uploaded_slip_in1']
-                    
-                    path_in2 = ""
-                    if 'uploaded_slip_in2' in st.session_state:
-                        path_in2 = im.upload_image(st.session_state['uploaded_slip_in2'])
-                        del st.session_state['uploaded_slip_in2']
-                    
-                    path_out = ""
-                    if 'uploaded_slip_out' in st.session_state:
-                        path_out = im.upload_image(st.session_state['uploaded_slip_out'])
-                        del st.session_state['uploaded_slip_out']
-                    
-                    status = "โอนแล้ว" if (service_type == "เช่าจอดูบอล" or path_out != "") else "ยังไม่โอน"
-                    
-                    row_dict = {
-                        "ID": new_id,
-                        "วันที่": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "ประเภท": service_type,
-                        "รายละเอียด": "",
-                        "ยอดเข้า": income,
-                        "ยอดออก": expense,
-                        "กำไร": profit,
-                        "สถานะโอนออก": status,
-                        "สลิปเข้า": path_in1,
-                        "สลิปเข้า 2": path_in2,
-                        "สลิปออก": path_out
-                    }
-                    if db.append_row(row_dict):
-                        st.success("✅ บันทึกลง Google Sheets & Cloudinary เรียบร้อย!")
-                        st.balloons()
-                    else:
-                        st.error("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล")
-                    
-                    st.rerun()
+                st.divider()
+                up_out = st.file_uploader("เลือกสลิปโอนออก (ถ้ามี)", type=['jpg','jpeg','png'], key="out_initial")
+
+    with col_preview:
+        st.markdown("### 🔍 ตรวจสอบยอด")
+        if service_type == "รับกลางไอดี":
+            fee = calculate_middleman_fee(income)
+            extra = (40 if is_yok else 0) + (5 if is_no_note else 0)
+            profit, expense = fee + extra, income - (fee + extra)
+        else:
+            profit, expense = income, 0
+        
+        st.markdown(f"""<div class="data-container">
+            <p>💰 <b>ยอดเงินเข้า:</b> {income:,.2f} ฿</p>
+            <p>💸 <b>ยอดต้องโอนออก:</b> {expense:,.2f} ฿</p>
+            <hr>
+            <p style="font-size:1.3rem; color:#1E88E5; font-weight:bold;">📈 กำไรสุทธิ: {profit:,.2f} ฿</p>
+            </div>""", unsafe_allow_html=True)
+        
+        # บันทึกข้อมูล
+        if st.button("✅ บันทึกรายการ", type="primary"):
+            with st.spinner("กำลังบันทึกข้อมูลและอัปโหลดรูป..."):
+                # อัปโหลดรูปไปยัง Cloudinary
+                url_in1 = im.upload_image(up1) if up1 else ""
+                url_in2 = im.upload_image(up2) if up2 else ""
+                url_out = im.upload_image(up_out) if (service_type == "รับกลางไอดี" and up_out) else ""
+                
+                # เตรียมข้อมูล
+                df_current = db.load_data()
+                new_id = db.get_next_id(df_current)
+                
+                # กำหนดสถานะโอนออก
+                # ถ้าเป็น "เช่าจอดูบอล" ให้ถือว่าโอนแล้ว (เพราะไม่มีการโอนออกยอดกลาง) 
+                # หรือ ถ้ามีสลิปโอนออก ก็ถือว่าโอนแล้ว
+                status = "โอนแล้ว" if (service_type == "เช่าจอดูบอล" or url_out != "") else "ยังไม่โอน"
+                
+                row_data = {
+                    "ID": new_id,
+                    "วันที่": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "ประเภท": service_type,
+                    "รายละเอียด": f"โยก:{is_yok}, NoNote:{is_no_note}" if service_type == "รับกลางไอดี" else "",
+                    "ยอดเข้า": income,
+                    "ยอดออก": expense,
+                    "กำไร": profit,
+                    "สถานะโอนออก": status,
+                    "สลิปเข้า": url_in1,
+                    "สลิปเข้า 2": url_in2,
+                    "สลิปออก": url_out
+                }
+                
+                if db.append_row(row_data):
+                    st.success(f"บันทึกรายการ ID {new_id} สำเร็จ!")
+                    st.balloons()
+                else:
+                    st.error("เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+                
+                st.rerun()
 
 with tab2:
-    st.header("📜 จัดการประวัติและคิวการโอนเงิน")
+    st.header("🗂️ ประวัติและคิวการโอน")
     df = db.load_data()
+    
+    if df.empty:
+        st.info("ยังไม่มีข้อมูลในระบบ")
+    else:
+        # --- ส่วนคิวโอนเงิน ---
+        pending_df = df[df["สถานะโอนออก"] == "ยังไม่โอน"]
+        if not pending_df.empty:
+            st.markdown("### 🔴 รายการค้างโอน")
+            st.dataframe(pending_df[["ID", "วันที่", "ประเภท", "ยอดออก"]], use_container_width=True, hide_index=True)
+            
+            with st.expander("✔️ ยืนยันการโอนออก"):
+                c_id, c_up = st.columns([1, 2])
+                with c_id:
+                    t_id = st.number_input("ใส่ ID รายการ", min_value=1, step=1)
+                with c_up:
+                    t_up = st.file_uploader("อัปโหลดสลิปโอนออก", type=['jpg','jpeg','png'], key="confirm_up")
+                
+                if st.button("✅ ยืนยันการโอน"):
+                    if t_id in df["ID"].values:
+                        url_out = im.upload_image(t_up) if t_up else ""
+                        if db.update_cell(t_id, "สถานะโอนออก", "โอนแล้ว") and db.update_cell(t_id, "สลิปออก", url_out):
+                            st.success(f"ยืนยันการโอน ID {t_id} เรียบร้อย!")
+                            st.rerun()
+                        else:
+                            st.error("อัปเดตข้อมูลไม่สำเร็จ")
+                    else:
+                        st.error("ไม่พบ ID นี้ในระบบ")
+
+        st.divider()
+        
+        # --- ส่วนประวัติทั้งหมด ---
+        st.markdown("### 📂 ประวัติรายการ")
+        # เรียง ID จากมากไปน้อย
+        df_sorted = df.sort_values("ID", ascending=False)
+        
+        # แสดงผลแบบการ์ด
+        for _, row in df_sorted.iterrows():
+            status_class = "status-paid" if row["สถานะโอนออก"] == "โอนแล้ว" else "status-pending"
+            
+            with st.expander(f"ID {row['ID']} | {row['วันที่']} | {row['ประเภท']}"):
+                col1, col2, col3 = st.columns(3)
+                col1.write(f"**ยอดเข้า:** {row['ยอดเข้า']:,.2f} ฿")
+                col2.write(f"**ยอดออก:** {row['ยอดออก']:,.2f} ฿")
+                col3.markdown(f"**สถานะ:** <span class='{status_class}'>{row['สถานะโอนออก']}</span>", unsafe_allow_html=True)
+                
+                st.markdown(f"**กำไร:** {row['กำไร']:,.2f} ฿")
+                
+                # แสดงรูปภาพสลิป
+                im_col1, im_col2, im_col3 = st.columns(3)
+                if row["สลิปเข้า"]:
+                    im_col1.image(row["สลิปเข้า"], caption="สลิปเข้า 1", width=150)
+                if row["สลิปเข้า 2"]:
+                    im_col2.image(row["สลิปเข้า 2"], caption="สลิปเข้า 2", width=150)
+                if row["สลิปออก"]:
+                    im_col3.image(row["สลิปออก"], caption="สลิปออก", width=150)
+                
+                if st.button(f"🗑️ ลบรายการ ID {row['ID']}", key=f"del_{row['ID']}"):
+                    if db.delete_row(row['ID']):
+                        st.success("ลบรายการแล้ว")
+                        st.rerun()
+
+with tab3:
+    st.header("📊 สรุปรายรับ-กำไร")
+    df = db.load_data()
+    
     if not df.empty:
-        pending_queue = df[df['สถานะโอนออก'] == "ยังไม่โอน"]
-        if not pending_queue.empty:
-            st.markdown("### 🔴 รายการค้างโอน (Pending Queue)")
-            with st.container():
-                st.markdown('<div class="data-container" style="border-left: 5px solid #dc3545;">', unsafe_allow_html=True)
-                st.dataframe(pending_queue[['ID', 'วันที่', 'ประเภท', 'ยอดออก', 'สถานะโอนออก']], use_container_width=True, hide_index=True)
-                st.markdown('</div>', unsafe_//... (rest of the code edited below)
+        df["วันที่"] = pd.to_datetime(df["วันที่"])
+        now = datetime.now()
+        
+        # กรองข้อมูล
+        df_today = df[df["วันที่"].dt.date == now.date()]
+        df_month = df[df["วันที่"].dt.month == now.month]
+        df_month = df_month[df_month["วันที่"].dt.year == now.year]
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("กำไรวันนี้", f"{df_today['กำไร'].sum():,.2f} ฿")
+        m2.metric("กำไรเดือนนี้", f"{df_month['กำไร'].sum():,.2f} ฿")
+        m3.metric("ยอดเงินเข้าสะสม", f"{df['ยอดเข้า'].sum():,.2f} ฿")
+        
+        st.divider()
+        st.markdown("### 📉 ตารางสรุป")
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info("ไม่มีข้อมูลสำหรับแสดงผล")
