@@ -251,9 +251,6 @@ with tab1:
                     key="custom_note_input"
                 )
             elif service_type == "การแลกไอดี":
-                def on_rate_change():
-                    st.session_state["income_exchange"] = float(st.session_state.get("exchange_rate_choice", 60))
-
                 st.markdown("**🎯 เลือกเรทค่าบริการแลกไอดี:**")
                 exchange_rate = st.radio(
                     "เรทค่าบริการ", 
@@ -261,8 +258,7 @@ with tab1:
                     horizontal=True, 
                     format_func=lambda x: f"🏷️ {x} บาท", 
                     label_visibility="collapsed",
-                    key="exchange_rate_choice",
-                    on_change=on_rate_change
+                    key="exchange_rate_choice"
                 )
                 
                 col_opt1, col_opt2 = st.columns(2)
@@ -285,57 +281,52 @@ with tab1:
 
         # 2. อัปโหลดสลิป
         with st.expander("🖼️ อัปโหลดสลิปการโอนเงิน", expanded=True):
-            st.markdown("**1. สลิปโอนเข้า (ใบที่ 1)**")
+            slip1_title = "**1. สลิปโอนเข้า**" if service_type == "การแลกไอดี" else "**1. สลิปโอนเข้า (ใบที่ 1)**"
+            slip1_file_label = "เลือกรูปสลิปโอนเข้า" if service_type == "การแลกไอดี" else "เลือกรูปสลิปเข้าใบที่ 1"
+            st.markdown(slip1_title)
             up1 = st.file_uploader(
-                "เลือกรูปสลิปเข้าใบที่ 1", 
+                slip1_file_label, 
                 type=['jpg', 'jpeg', 'png', 'webp'], 
                 key="file_in_1"
             )
             
             if up1:
                 # แสดงภาพสลิปขนาดกะทัดรัด
-                st.image(up1, width=220, caption="สลิปโอนเข้า (ใบที่ 1)")
+                st.image(up1, width=220, caption="สลิปโอนเข้า")
                 
-                # ปุ่ม AI อ่านสลิป
-                if st.button("🤖 ให้ AI (Gemini 2.0 Flash) สแกนอ่านยอดเงิน", key="btn_scan_ai"):
-                    with st.spinner("AI กำลังวิเคราะห์สลิป..."):
-                        if hasattr(up1, "seek"):
-                            up1.seek(0)
-                        pil_img = Image.open(up1)
-                        detected_val = read_slip_with_ai(pil_img)
-                        if detected_val is not None and detected_val > 0:
-                            st.session_state['detected_income'] = float(detected_val)
-                            if service_type == "การแลกไอดี":
-                                st.session_state['income_exchange'] = float(detected_val)
-                            else:
+                # ปุ่ม AI อ่านสลิป (เฉพาะรับกลางไอดีและเช่าจอดูบอล เพราะการแลกไอดีใช้เรทตายตัว)
+                if service_type != "การแลกไอดี":
+                    if st.button("🤖 ให้ AI (Gemini 2.0 Flash) สแกนอ่านยอดเงิน", key="btn_scan_ai"):
+                        with st.spinner("AI กำลังวิเคราะห์สลิป..."):
+                            if hasattr(up1, "seek"):
+                                up1.seek(0)
+                            pil_img = Image.open(up1)
+                            detected_val = read_slip_with_ai(pil_img)
+                            if detected_val is not None and detected_val > 0:
+                                st.session_state['detected_income'] = float(detected_val)
                                 st.session_state['input_income_general'] = float(detected_val)
-                            st.toast(f"✅ AI อ่านยอดเงินสำเร็จ: {detected_val:,.2f} ฿", icon="🎉")
-                        else:
-                            st.warning("⚠️ AI ไม่สามารถตรวจจับยอดเงินได้ชัดเจน กรุณาระบุยอดเงินด้วยตนเอง")
+                                st.toast(f"✅ AI อ่านยอดเงินสำเร็จ: {detected_val:,.2f} ฿", icon="🎉")
+                            else:
+                                st.warning("⚠️ AI ไม่สามารถตรวจจับยอดเงินได้ชัดเจน กรุณาระบุยอดเงินด้วยตนเอง")
 
-            st.markdown("**2. สลิปโอนเข้า (ใบที่ 2 - ถ้ามี)**")
-            up2 = st.file_uploader(
-                "เลือกรูปสลิปเข้าใบที่ 2 (กรณีโอนแยกบัญชี)", 
-                type=['jpg', 'jpeg', 'png', 'webp'], 
-                key="file_in_2"
-            )
-            if up2:
-                st.image(up2, width=220, caption="สลิปโอนเข้า (ใบที่ 2)")
-
-            st.divider()
-            
-            # ช่องกรอกยอดเงินเข้า
-            if service_type == "การแลกไอดี":
-                if "income_exchange" not in st.session_state:
-                    st.session_state["income_exchange"] = float(exchange_rate)
-                income = st.number_input(
-                    "💰 ยอดเงินโอนเข้าทั้งหมด (บาท)", 
-                    min_value=0.0, 
-                    step=10.0, 
-                    format="%.2f",
-                    key="income_exchange"
+            # สลิปโอนเข้าใบที่ 2 (ซ่อนในหัวข้อการแลกไอดี)
+            up2 = None
+            if service_type != "การแลกไอดี":
+                st.markdown("**2. สลิปโอนเข้า (ใบที่ 2 - ถ้ามี)**")
+                up2 = st.file_uploader(
+                    "เลือกรูปสลิปเข้าใบที่ 2 (กรณีโอนแยกบัญชี)", 
+                    type=['jpg', 'jpeg', 'png', 'webp'], 
+                    key="file_in_2"
                 )
+                if up2:
+                    st.image(up2, width=220, caption="สลิปโอนเข้า (ใบที่ 2)")
+
+            # ช่องกรอกยอดเงินเข้า (ซ่อนในหัวข้อการแลกไอดี เพราะเรทตายตัว 60/200)
+            if service_type == "การแลกไอดี":
+                extra_fee = (40.0 if is_yok else 0.0) + (5.0 if is_no_note else 0.0)
+                income = float(exchange_rate) + extra_fee
             else:
+                st.divider()
                 if "input_income_general" not in st.session_state:
                     st.session_state["input_income_general"] = float(st.session_state.get('detected_income', 0.0))
                 income = st.number_input(
@@ -350,7 +341,8 @@ with tab1:
             up_out = None
             if service_type in ["รับกลางไอดี", "การแลกไอดี"]:
                 st.divider()
-                st.markdown("**3. สลิปโอนออก (ถ้าโอนให้ผู้ขาย/คู่แลกแล้ว)**")
+                out_label = "**2. สลิปโอนออก (ถ้ามี)**" if service_type == "การแลกไอดี" else "**3. สลิปโอนออก (ถ้าโอนให้ผู้ขายทันทีแล้ว)**"
+                st.markdown(out_label)
                 up_out = st.file_uploader(
                     "เลือกรูปสลิปโอนออก (ถ้ามี)", 
                     type=['jpg', 'jpeg', 'png', 'webp'], 
@@ -373,7 +365,7 @@ with tab1:
             base_fee = float(exchange_rate)
             extra_fee = (40.0 if is_yok else 0.0) + (5.0 if is_no_note else 0.0)
             profit = base_fee + extra_fee
-            expense = max(0.0, income - profit)
+            expense = 0.0
             initial_status = "โอนแล้ว"
         else:
             base_fee = 0.0
