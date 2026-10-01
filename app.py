@@ -220,10 +220,6 @@ tab1, tab2, tab3 = st.tabs(["📝 บันทึกรายการเข้�
 # ------------------------------------------------------------
 with tab1:
     st.subheader("📝 บันทึกรายการใหม่")
-    
-    if not check_cloudinary_ready():
-        st.info("💡 **สถานะการเก็บรูปสลิป:** ระบบจะบันทึกรูปภาพสลิปลงในเครื่องให้ทันทีและแสดงในหน้าประวัติได้เลย (หากต้องการเก็บรูปบน Cloudinary อย่างถาวรสำหรับ Streamlit Cloud สามารถนำ API Secret จริงจาก Cloudinary Dashboard มาใส่แทนค่า `<your_api_secret>` ใน `secrets.toml` ได้ครับ)")
-    
     col_input, col_preview = st.columns([1.1, 0.9], gap="large")
     
     with col_input:
@@ -233,13 +229,14 @@ with tab1:
         with st.expander("⚙️ เลือกประเภทบริการ & ตัวเลือกเสริม", expanded=True):
             service_type = st.selectbox(
                 "เลือกบริการ", 
-                ["รับกลางไอดี", "เช่าจอดูบอล"], 
+                ["รับกลางไอดี", "การแลกไอดี", "เช่าจอดูบอล"], 
                 key="select_service_type"
             )
             
             is_yok = False
             is_no_note = False
             custom_note = ""
+            exchange_rate = 60
             
             if service_type == "รับกลางไอดี":
                 col_opt1, col_opt2 = st.columns(2)
@@ -252,6 +249,32 @@ with tab1:
                     "📌 บันทึกรายละเอียดเพิ่มเติม (ชื่อลูกค้า / รหัสไอดี)", 
                     placeholder="เช่น กลางไอดี RoV บัญชีคุณบาส",
                     key="custom_note_input"
+                )
+            elif service_type == "การแลกไอดี":
+                def on_rate_change():
+                    st.session_state["income_exchange"] = float(st.session_state.get("exchange_rate_choice", 60))
+
+                st.markdown("**🎯 เลือกเรทค่าบริการแลกไอดี:**")
+                exchange_rate = st.radio(
+                    "เรทค่าบริการ", 
+                    [60, 200], 
+                    horizontal=True, 
+                    format_func=lambda x: f"🏷️ {x} บาท", 
+                    label_visibility="collapsed",
+                    key="exchange_rate_choice",
+                    on_change=on_rate_change
+                )
+                
+                col_opt1, col_opt2 = st.columns(2)
+                with col_opt1:
+                    is_yok = st.checkbox("🔄 มีบริการโยกไอดี (+40.-)", key="chk_yok_ex")
+                with col_opt2:
+                    is_no_note = st.checkbox("✍️ ลืมเขียนโน๊ต (+5.-)", key="chk_no_note_ex")
+                
+                custom_note = st.text_input(
+                    "📌 บันทึกรายละเอียดเพิ่มเติม (ชื่อลูกค้า / รหัสไอดี)", 
+                    placeholder="เช่น แลกไอดี RoV บัญชี A แลกกับ บัญชี B",
+                    key="exchange_note_input"
                 )
             else:
                 custom_note = st.text_input(
@@ -282,6 +305,10 @@ with tab1:
                         detected_val = read_slip_with_ai(pil_img)
                         if detected_val is not None and detected_val > 0:
                             st.session_state['detected_income'] = float(detected_val)
+                            if service_type == "การแลกไอดี":
+                                st.session_state['income_exchange'] = float(detected_val)
+                            else:
+                                st.session_state['input_income_general'] = float(detected_val)
                             st.toast(f"✅ AI อ่านยอดเงินสำเร็จ: {detected_val:,.2f} ฿", icon="🎉")
                         else:
                             st.warning("⚠️ AI ไม่สามารถตรวจจับยอดเงินได้ชัดเจน กรุณาระบุยอดเงินด้วยตนเอง")
@@ -298,23 +325,34 @@ with tab1:
             st.divider()
             
             # ช่องกรอกยอดเงินเข้า
-            default_income = float(st.session_state.get('detected_income', 0.0))
-            income = st.number_input(
-                "💰 ยอดเงินโอนเข้าทั้งหมด (บาท)", 
-                min_value=0.0, 
-                step=10.0, 
-                value=default_income,
-                format="%.2f",
-                key="input_income_amount"
-            )
+            if service_type == "การแลกไอดี":
+                if "income_exchange" not in st.session_state:
+                    st.session_state["income_exchange"] = float(exchange_rate)
+                income = st.number_input(
+                    "💰 ยอดเงินโอนเข้าทั้งหมด (บาท)", 
+                    min_value=0.0, 
+                    step=10.0, 
+                    format="%.2f",
+                    key="income_exchange"
+                )
+            else:
+                if "input_income_general" not in st.session_state:
+                    st.session_state["input_income_general"] = float(st.session_state.get('detected_income', 0.0))
+                income = st.number_input(
+                    "💰 ยอดเงินโอนเข้าทั้งหมด (บาท)", 
+                    min_value=0.0, 
+                    step=10.0, 
+                    format="%.2f",
+                    key="input_income_general"
+                )
 
             # สลิปโอนออก (ถ้ามีตั้งแต่แรก)
             up_out = None
-            if service_type == "รับกลางไอดี":
+            if service_type in ["รับกลางไอดี", "การแลกไอดี"]:
                 st.divider()
-                st.markdown("**3. สลิปโอนออก (ถ้าโอนให้ผู้ขายทันทีแล้ว)**")
+                st.markdown("**3. สลิปโอนออก (ถ้าโอนให้ผู้ขาย/คู่แลกแล้ว)**")
                 up_out = st.file_uploader(
-                    "เลือกรูปสลิปโอนออก (ถ้ายังไม่โอน ข้ามได้เลย ค่อยยืนยันในแท็บคิว)", 
+                    "เลือกรูปสลิปโอนออก (ถ้ามี)", 
                     type=['jpg', 'jpeg', 'png', 'webp'], 
                     key="file_out_initial"
                 )
@@ -331,6 +369,12 @@ with tab1:
             profit = base_fee + extra_fee
             expense = max(0.0, income - profit)
             initial_status = "โอนแล้ว"
+        elif service_type == "การแลกไอดี":
+            base_fee = float(exchange_rate)
+            extra_fee = (40.0 if is_yok else 0.0) + (5.0 if is_no_note else 0.0)
+            profit = base_fee + extra_fee
+            expense = max(0.0, income - profit)
+            initial_status = "โอนแล้ว"
         else:
             base_fee = 0.0
             extra_fee = 0.0
@@ -340,12 +384,13 @@ with tab1:
 
         status_class = "status-paid"
 
-        # แสดงกล่องสรุปผลแบบเรียลไทม์ (ประกอบ HTML แบบไม่มีช่องว่างนำหน้าเพื่อไม่ให้ Markdown แสดงเป็นบล็อกโค้ด)
+        # แสดงกล่องสรุปผลแบบเรียลไทม์
         extra_fee_html = ""
-        if service_type == "รับกลางไอดี":
+        if service_type in ["รับกลางไอดี", "การแลกไอดี"]:
+            fee_label = "ค่ากลางพื้นฐาน" if service_type == "รับกลางไอดี" else f"เรทค่าแลกไอดี ({exchange_rate}฿)"
             extra_fee_html += (
                 f'<div style="display:flex; justify-content:space-between; font-size:0.9rem; color:#718096; margin-bottom:4px;">'
-                f'<span>- ค่ากลางพื้นฐาน:</span><span>{base_fee:,.2f} ฿</span></div>'
+                f'<span>- {fee_label}:</span><span>{base_fee:,.2f} ฿</span></div>'
             )
             if extra_fee > 0:
                 extra_fee_html += (
@@ -388,11 +433,13 @@ with tab1:
                     # 2. อัปโหลดรูปภาพ (บันทึกขึ้น Cloudinary หรือบันทึกลงเครื่องอัตโนมัติ)
                     url_in1 = im.upload_image(up1, subfolder="incoming", prefix=f"{new_id}_in1") if up1 else ""
                     url_in2 = im.upload_image(up2, subfolder="incoming", prefix=f"{new_id}_in2") if up2 else ""
-                    url_out = im.upload_image(up_out, subfolder="outgoing", prefix=f"{new_id}_out") if (service_type == "รับกลางไอดี" and up_out) else ""
+                    url_out = im.upload_image(up_out, subfolder="outgoing", prefix=f"{new_id}_out") if (service_type in ["รับกลางไอดี", "การแลกไอดี"] and up_out) else ""
                     
                     # 3. จัดการข้อความรายละเอียด
                     details_parts = []
-                    if service_type == "รับกลางไอดี":
+                    if service_type == "การแลกไอดี":
+                        details_parts.append(f"เรทแลก {exchange_rate}฿")
+                    if service_type in ["รับกลางไอดี", "การแลกไอดี"]:
                         if is_yok: details_parts.append("โยกไอดี (+40)")
                         if is_no_note: details_parts.append("ลืมโน๊ต (+5)")
                     if custom_note.strip():
@@ -422,6 +469,10 @@ with tab1:
                         # เคลียร์ค่าที่ AI เคยอ่านค้างไว้
                         if 'detected_income' in st.session_state:
                             del st.session_state['detected_income']
+                        if 'income_exchange' in st.session_state:
+                            del st.session_state['income_exchange']
+                        if 'input_income_general' in st.session_state:
+                            del st.session_state['input_income_general']
                         
                         st.session_state["flash_message"] = {
                             "type": "success",
@@ -447,7 +498,7 @@ with tab2:
         # ตัวกรองข้อมูล
         filter_col1, filter_col2 = st.columns([1, 1.5])
         with filter_col1:
-            filter_type = st.selectbox("กรองตามประเภทบริการ", ["ทั้งหมด", "รับกลางไอดี", "เช่าจอดูบอล"], key="filter_type")
+            filter_type = st.selectbox("กรองตามประเภทบริการ", ["ทั้งหมด", "รับกลางไอดี", "การแลกไอดี", "เช่าจอดูบอล"], key="filter_type")
         with filter_col2:
             search_query = st.text_input("🔍 ค้นหา (ID หรือ รายละเอียด)", placeholder="พิมพ์ค้นหา...", key="filter_search")
             
@@ -597,9 +648,10 @@ with tab3:
         
         # 2. แยกตามประเภทบริการ
         st.markdown("#### 🏷️ สรุปแยกตามประเภทบริการ")
-        b1, b2 = st.columns(2)
+        b1, b2, b3 = st.columns(3)
         
         df_mid = df_report[df_report["ประเภท"] == "รับกลางไอดี"]
+        df_ex = df_report[df_report["ประเภท"] == "การแลกไอดี"]
         df_ball = df_report[df_report["ประเภท"] == "เช่าจอดูบอล"]
         
         with b1:
@@ -616,6 +668,19 @@ with tab3:
             st.markdown(mid_box_html, unsafe_allow_html=True)
             
         with b2:
+            ex_box_html = (
+                f'<div class="data-card" style="border-top: 4px solid #8B5CF6;">'
+                f'<h4 style="margin-top:0; color:#8B5CF6;">🔄 การแลกไอดี</h4>'
+                f'<p>จำนวนรายการ: <b>{len(df_ex)}</b> รายการ</p>'
+                f'<p>ยอดเงินเข้าทั้งหมด: <b>{df_ex["ยอดเข้า"].sum():,.2f} ฿</b></p>'
+                f'<p>ยอดที่โอนออก: <b>{df_ex["ยอดออก"].sum():,.2f} ฿</b></p>'
+                f'<p style="font-size:1.15rem; color:#8B5CF6; font-weight:700;">'
+                f'กำไรสุทธิ: {df_ex["กำไร"].sum():,.2f} ฿</p>'
+                f'</div>'
+            )
+            st.markdown(ex_box_html, unsafe_allow_html=True)
+
+        with b3:
             ball_box_html = (
                 f'<div class="data-card" style="border-top: 4px solid #10B981;">'
                 f'<h4 style="margin-top:0; color:#10B981;">⚽ เช่าจอดูบอล</h4>'
