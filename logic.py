@@ -1,0 +1,281 @@
+"""
+logic.py — ตรรกะคำนวณล้วน ๆ (ไม่พึ่ง Streamlit) เพื่อให้ทดสอบได้ง่าย
+- เรทค่ากลางแบบขั้นบันได + โหมด "ยอดรวมค่ากลางแล้ว / ยังไม่รวม"
+- คำนวณยอดออก/กำไร จากสลิปจริง
+- แปลงวันที่จาก Google Sheets ให้ถูกต้อง + สรุปรายวัน/รายเดือน
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, date
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+
+# ------------------------------------------------------------
+# ค่าคงที่
+# ------------------------------------------------------------
+TZ = ZoneInfo("Asia/Bangkok")
+
+# (ยอดสูงสุดของขั้น, ค่ากลาง)
+FEE_TIERS: list[tuple[float, float]] = [
+    (1490, 60),
+    (2490, 80),
+    (3990, 100),
+    (5990, 120),
+    (7990, 140),
+    (9999, 160),
+]
+PERCENT_RATE = 0.02          # 10,000 ขึ้นไป คิด 2%
+YOK_FEE = 40.0               # ค่าโยกเฟส/โยกเมล (ไม่รวมค่ากลาง)
+NO_NOTE_FEE = 5.0            # ลืมเขียนโน๊ต
+
+SERVICES = ["รับกลางไอดี", "การแลกไอดี", "เช่าจอดูบอล"]
+
+TH_MONTHS = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+             "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
+TH_MONTHS_FULL = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+                  "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+TH_WEEKDAYS = ["จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส.", "อา."]
+
+
+def now_th() -> datetime:
+    """เวลาปัจจุบันตามเวลาไทย (ไม่ติด tzinfo) — เซิร์ฟเวอร์ Streamlit Cloud ใช้ UTC"""
+    return datetime.now(TZ).replace(tzinfo=None)
+
+
+def today_th() -> date:
+    return now_th().date()
+
+
+# ------------------------------------------------------------
+# ค่ากลาง
+# ------------------------------------------------------------
+def tier_fee(price: float) -> float:
+    """ค่ากลางตามตารางเรท โดยเทียบจาก 'ยอดไอดี' (price)"""
+    for limit, fee in FEE_TIERS:
+        if price <= limit:
+            return float(fee)
+    return round(price * PERCENT_RATE, 2)
+
+
+@dataclass
+class FeeResult:
+    base_fee: float            # ค่ากลางที่คิด
+    price: float               # ยอดที่ใช้เทียบเรท (ยอดไอดี)
+    ambiguous: bool = False    # ยอดตกช่วงคาบเกี่ยวระหว่าง 2 เรท
+    alt_fee: float | None = None
+    warning: str = ""
+
+
+def calc_middleman_fee(amount: float, extras: float = 0.0, includes_fee: bool = False) -> FeeResult:
+    """
+    includes_fee=False  (ยอดยังไม่รวมค่ากลาง)  -> เทียบเรทจากยอดที่โอนมาตรง ๆ
+                         เช่น โอน 1491 -> เรท 80
+    includes_fee=True   (ยอดรวมค่ากลางแล้ว)   -> หักค่ากลาง (และค่าบริการเสริม) ออกก่อนแล้วค่อยเทียบเรท
+                         เช่น โอน 1500 -> 1500-60 = 1440 ยังไม่เกิน 1490 -> เรท 60
+    """
+    amount = float(amount or 0)
+    if not includes_fee:
+        return FeeResult(tier_fee(amount), amount)
+
+    net = amount - float(extras or 0)
+    lowest = float(FEE_TIERS[0][1])
+    if net <= lowest:
+        return FeeResult(lowest, max(net - lowest, 0.0),
+                         warning="ยอดโอนน้อยกว่าค่ากลางขั้นต่ำ ตรวจสอบยอดอีกครั้ง")
+
+    # 1) หาเรทที่ "ลงตัว" : ค่ากลาง f ที่ทำให้ tier(net - f) == f (มีได้แค่ค่าเดียว)
+    for _, fee in FEE_TIERS:
+        if tier_fee(net - fee) == fee:
+            return FeeResult(float(fee), net - fee)
+    price = net / (1 + PERCENT_RATE)
+    if price > FEE_TIERS[-1][0]:
+        fee = round(net - price, 2)
+        return FeeResult(fee, round(price, 2))
+
+    # 2) ยอดตกช่วงคาบเกี่ยว (เช่น 1,551–1,569) : ใช้เรทที่สูงกว่าเพื่อไม่ให้ร้านคิดขาด
+    #    และแจ้งเตือนให้เช็กกับลูกค้า
+    prev = None
+    for _, fee in FEE_TIERS:
+        if tier_fee(net - fee) <= fee:
+            return FeeResult(float(fee), net - fee, ambiguous=True, alt_fee=prev,
+                             warning="ยอดอยู่ช่วงคาบเกี่ยวระหว่าง 2 เรท ระบบเลือกเรทที่สูงกว่า")
+        prev = float(fee)
+    fee = round(net * PERCENT_RATE / (1 + PERCENT_RATE), 2)
+    return FeeResult(fee, round(net - fee, 2), ambiguous=True, alt_fee=prev,
+                     warning="ยอดอยู่ช่วงคาบเกี่ยวระหว่างเรท 160 กับ 2% ตรวจสอบกับลูกค้า")
+
+
+@dataclass
+class Calc:
+    income: float
+    expense: float
+    profit: float
+    base_fee: float = 0.0
+    extra_fee: float = 0.0
+    expected_profit: float = 0.0
+    expected_expense: float = 0.0
+    from_slip: bool = False       # ยอดออกมาจากสลิป/กรอกจริง
+    diff: float | None = None     # กำไรจริง - กำไรที่ควรได้
+    fee: FeeResult | None = None
+    other_mode_profit: float | None = None   # กำไรถ้าคิดอีกโหมด (ไว้ช่วยแนะนำ)
+    notes: list[str] = field(default_factory=list)
+
+
+def extras_of(is_yok: bool, is_no_note: bool) -> float:
+    return (YOK_FEE if is_yok else 0.0) + (NO_NOTE_FEE if is_no_note else 0.0)
+
+
+def compute_middleman(income: float, is_yok: bool, is_no_note: bool,
+                      includes_fee: bool, actual_out: float | None = None) -> Calc:
+    extras = extras_of(is_yok, is_no_note)
+    fr = calc_middleman_fee(income, extras, includes_fee)
+    expected_profit = fr.base_fee + extras
+    expected_expense = max(0.0, income - expected_profit)
+
+    other = calc_middleman_fee(income, extras, not includes_fee)
+    other_profit = other.base_fee + extras
+
+    c = Calc(income=income, expense=expected_expense, profit=expected_profit,
+             base_fee=fr.base_fee, extra_fee=extras,
+             expected_profit=expected_profit, expected_expense=expected_expense,
+             fee=fr, other_mode_profit=other_profit)
+    if actual_out is not None and actual_out > 0:
+        c.from_slip = True
+        c.expense = float(actual_out)
+        c.profit = round(income - actual_out, 2)
+        c.diff = round(c.profit - expected_profit, 2)
+    return c
+
+
+def compute_exchange(rate: float, is_yok: bool, is_no_note: bool,
+                     actual_out: float | None = None) -> Calc:
+    extras = extras_of(is_yok, is_no_note)
+    income = float(rate) + extras
+    out = float(actual_out or 0)
+    return Calc(income=income, expense=out, profit=round(income - out, 2),
+                base_fee=float(rate), extra_fee=extras,
+                expected_profit=income, expected_expense=0.0, from_slip=out > 0)
+
+
+def compute_rental(income: float) -> Calc:
+    return Calc(income=income, expense=0.0, profit=income, expected_profit=income)
+
+
+# ------------------------------------------------------------
+# วันที่
+# ------------------------------------------------------------
+_DMY = re.compile(r"^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})(?:[ ,T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?")
+_YMD = re.compile(r"^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?")
+
+
+def _fix_be(y: int) -> int:
+    return y - 543 if y > 2400 else y
+
+
+def parse_sheet_datetime(val) -> pd.Timestamp:
+    """รองรับ: '2026-10-15 04:55', '15/10/2026 4:55:00', ปี พ.ศ., และเลข serial ของ Google Sheets"""
+    if val is None:
+        return pd.NaT
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        if pd.isna(val):
+            return pd.NaT
+        if 20000 < float(val) < 80000:
+            return pd.Timestamp(datetime(1899, 12, 30) + timedelta(days=float(val))).round("min")
+        return pd.NaT
+    s = str(val).strip()
+    if not s:
+        return pd.NaT
+    try:
+        f = float(s)
+        if 20000 < f < 80000:
+            return parse_sheet_datetime(f)
+    except ValueError:
+        pass
+    m = _YMD.match(s)
+    if m:
+        y, mo, d, hh, mm, ss = m.groups()
+        try:
+            return pd.Timestamp(_fix_be(int(y)), int(mo), int(d), int(hh or 0), int(mm or 0), int(ss or 0))
+        except ValueError:
+            return pd.NaT
+    m = _DMY.match(s)
+    if m:
+        d, mo, y, hh, mm, ss = m.groups()
+        try:
+            return pd.Timestamp(_fix_be(int(y)), int(mo), int(d), int(hh or 0), int(mm or 0), int(ss or 0))
+        except ValueError:
+            return pd.NaT
+    ts = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    if pd.notna(ts) and ts.year > 2400:
+        ts = ts.replace(year=ts.year - 543)
+    return ts
+
+
+def with_dates(df: pd.DataFrame) -> pd.DataFrame:
+    """เพิ่มคอลัมน์ dt / day / year / month ให้ DataFrame"""
+    out = df.copy()
+    out["dt"] = pd.to_datetime(out["วันที่"].map(parse_sheet_datetime), errors="coerce")
+    # ทำให้คอลัมน์วันที่เป็นรูปแบบเดียวกันทั้งหมด (เช่น ตอนดาวน์โหลด CSV)
+    out["วันที่"] = [
+        ts.strftime("%Y-%m-%d %H:%M") if pd.notna(ts) else ("" if raw is None else str(raw))
+        for ts, raw in zip(out["dt"], out["วันที่"])
+    ]
+    out["day"] = out["dt"].dt.date
+    out["year"] = out["dt"].dt.year
+    out["month"] = out["dt"].dt.month
+    return out
+
+
+def th_date(d: date, weekday: bool = True, full_month: bool = False) -> str:
+    m = (TH_MONTHS_FULL if full_month else TH_MONTHS)[d.month - 1]
+    s = f"{d.day} {m} {d.year + 543}"
+    return f"{TH_WEEKDAYS[d.weekday()]} {s}" if weekday else s
+
+
+def th_month(year: int, month: int, full: bool = True) -> str:
+    return f"{(TH_MONTHS_FULL if full else TH_MONTHS)[month - 1]} {year + 543}"
+
+
+# ------------------------------------------------------------
+# สรุปยอด
+# ------------------------------------------------------------
+def totals(df: pd.DataFrame) -> dict:
+    if df is None or df.empty:
+        return {"count": 0, "in": 0.0, "out": 0.0, "profit": 0.0}
+    return {
+        "count": int(len(df)),
+        "in": float(df["ยอดเข้า"].sum()),
+        "out": float(df["ยอดออก"].sum()),
+        "profit": float(df["กำไร"].sum()),
+    }
+
+
+def daily_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """สรุปรายวัน (ต้องผ่าน with_dates มาก่อน) เรียงวันล่าสุดก่อน"""
+    d = df.dropna(subset=["dt"])
+    if d.empty:
+        return pd.DataFrame(columns=["day", "count", "in", "out", "profit"])
+    g = d.groupby("day").agg(count=("ID", "size"), **{
+        "in": ("ยอดเข้า", "sum"), "out": ("ยอดออก", "sum"), "profit": ("กำไร", "sum")})
+    return g.reset_index().sort_values("day", ascending=False).reset_index(drop=True)
+
+
+def monthly_summary(df: pd.DataFrame, year: int) -> pd.DataFrame:
+    """สรุป 12 เดือนของปีที่เลือก (เดือนที่ไม่มีรายการ = 0)"""
+    d = df.dropna(subset=["dt"])
+    d = d[d["year"] == year]
+    base = pd.DataFrame({"month": range(1, 13)})
+    if d.empty:
+        g = pd.DataFrame(columns=["month", "count", "in", "out", "profit"])
+    else:
+        g = d.groupby("month").agg(count=("ID", "size"), **{
+            "in": ("ยอดเข้า", "sum"), "out": ("ยอดออก", "sum"), "profit": ("กำไร", "sum")}).reset_index()
+    m = base.merge(g, on="month", how="left").fillna(0)
+    m["count"] = m["count"].astype(int)
+    for c in ("in", "out", "profit"):
+        m[c] = m[c].astype(float)
+    m["label"] = m["month"].map(lambda x: TH_MONTHS[x - 1])
+    return m
