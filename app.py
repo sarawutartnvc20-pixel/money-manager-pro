@@ -1,6 +1,7 @@
+import hmac
 import html
 import os
-import importlib
+import time
 
 import pandas as pd
 import streamlit as st
@@ -9,13 +10,6 @@ import streamlit as st
 import logic as lg
 import sheets_client as db
 import image_manager as im
-import slip_reader as sr
-
-for _m in (lg, db, im, sr):
-    try:
-        importlib.reload(_m)
-    except Exception:
-        pass
 
 # ============================================================
 # 1. Page config & Theme
@@ -205,54 +199,56 @@ def flash(text, kind="success", balloons=False):
 
 
 def render_slip_item(slip_val, caption: str):
-    """แสดงรูปสลิป รองรับทั้ง Cloudinary URL และ path ในเครื่อง"""
+    """แสดงรูปสลิป: รับเฉพาะ https:// หรือไฟล์ในโฟลเดอร์ slips/ ของโปรเจกต์ (กันอ่านไฟล์นอกโฟลเดอร์)"""
     if slip_val is None or str(slip_val).strip() in ("", "nan"):
         st.caption(f"⚪ ไม่มี{caption}")
         return
-    slip_str = str(slip_val).strip()
-    if slip_str.startswith(("http://", "https://")):
-        st.image(slip_str, caption=caption, width=220)
-        st.markdown(f"[🔍 เปิดรูปเต็ม]({slip_str})")
-    elif os.path.exists(slip_str):
-        st.image(slip_str, caption=caption, width=220)
+    v = str(slip_val).strip()
+    if v.startswith("https://"):
+        st.image(v, caption=caption, width=220)
+        st.link_button("🔍 เปิดรูปเต็ม", v)
+    elif v.startswith("slips/") and ".." not in v and os.path.isfile(v):
+        st.image(v, caption=caption, width=220)
     else:
-        st.caption(f"📁 {caption}: `{os.path.basename(slip_str)}` (ไฟล์อยู่ในเครื่องเดิม)")
+        st.caption(f"📁 {caption}: `{os.path.basename(v)}` (ไฟล์อยู่ในเครื่องเดิม)")
 
 
-def slip_reads(files, do_read: bool, tag: str):
-    """แสดง thumbnail + ยอดที่ AI อ่านได้ คืนค่า list[(hash, amount|None)]"""
-    out = []
-    for i, f in enumerate(files):
-        h = sr.file_hash(f)
-        st.image(f, width=170)
-        if not do_read:
-            out.append((h, None))
-            continue
-        with st.spinner("🤖 AI กำลังอ่านยอด..."):
-            amount, err = sr.read_amount(f)
-        if amount:
-            st.markdown(f'<span class="mm-amt ok">✓ อ่านได้ {fmt(amount)} ฿</span>', unsafe_allow_html=True)
-        else:
-            st.markdown(f'<span class="mm-amt no">อ่านยอดไม่ได้ — กรอกเองด้านล่าง</span>', unsafe_allow_html=True)
-            if err:
-                st.caption(f"รายละเอียด: {err[:160]}")
-            if st.button("🔄 ให้ AI อ่านใหม่", key=f"reread_{tag}_{i}_{h[:8]}"):
-                sr.forget(f)
-                st.rerun()
-        out.append((h, amount))
-    return out
-
-
-def apply_reads(reads, state_key: str, applied_key: str):
-    """เอายอดจากสลิปไปใส่ช่องกรอก (ครั้งเดียวต่อชุดสลิป ผู้ใช้แก้เองได้)"""
-    known = [a for _, a in reads if a]
-    if not known:
+# ============================================================
+# 2.5 ล็อกอิน (ป้องกันคนนอกเปิดดู/ลบข้อมูลการเงิน)
+# ============================================================
+def require_login():
+    """ต้องตั้ง APP_PASSWORD ใน Secrets ของ Streamlit — ถ้าไม่ตั้ง แอปจะไม่เปิด (fail-closed)"""
+    pw = str(st.secrets.get("APP_PASSWORD", "")).strip()
+    if not pw:
+        st.error("🔒 ยังไม่ได้ตั้งรหัสผ่าน — เพิ่มบรรทัด `APP_PASSWORD = \"รหัสของคุณ\"` ใน Secrets แล้วรีบูตแอป")
+        st.stop()
+    if st.session_state.get("_auth_ok"):
         return
-    sig = tuple((h, a) for h, a in reads)
-    # ใส่ยอดเมื่อสลิปเปลี่ยน หรือช่องกรอกถูกรีเซ็ต (เช่น สลับประเภทบริการไปมา)
-    if st.session_state.get(applied_key) != sig or state_key not in st.session_state:
-        st.session_state[state_key] = float(round(sum(known), 2))
-        st.session_state[applied_key] = sig
+    st.markdown('<div class="mm-hero"><div><h1>🔒 Money Manager Pro</h1>'
+                '<div class="sub">กรุณาใส่รหัสผ่านเพื่อเข้าใช้งาน</div></div></div>', unsafe_allow_html=True)
+    wait = st.session_state.get("_lock_until", 0) - time.time()
+    if wait > 0:
+        st.error(f"ใส่รหัสผิดหลายครั้ง กรุณารออีก {int(wait) + 1} วินาที")
+        st.stop()
+    with st.form("login_form"):
+        entered = st.text_input("รหัสผ่าน", type="password")
+        go = st.form_submit_button("เข้าสู่ระบบ", type="primary")
+    if go:
+        if hmac.compare_digest(entered.encode("utf-8"), pw.encode("utf-8")):
+            st.session_state["_auth_ok"] = True
+            st.session_state["_fails"] = 0
+            st.rerun()
+        time.sleep(1.5)
+        fails = st.session_state.get("_fails", 0) + 1
+        st.session_state["_fails"] = fails
+        if fails >= 5:
+            st.session_state["_lock_until"] = time.time() + 60
+            st.session_state["_fails"] = 0
+        st.error("❌ รหัสผ่านไม่ถูกต้อง")
+    st.stop()
+
+
+require_login()
 
 
 # ============================================================
@@ -306,11 +302,7 @@ with tab1:
 
         # ---------- Step 2 ----------
         with st.container(border=True):
-            step(2, "อัปโหลดสลิป", "AI อ่านยอดและสรุปให้ทันที")
-            ai_ok = sr.is_ready()
-            auto_ai = st.toggle("🤖 อ่านยอดจากสลิปอัตโนมัติ (Gemini)", value=ai_ok, disabled=not ai_ok,
-                                key=K("auto_ai"),
-                                help=None if ai_ok else "ใส่ GEMINI_API_KEY ใน secrets.toml ก่อน")
+            step(2, "อัปโหลดสลิป", "ไม่บังคับ — แนบไว้เป็นหลักฐาน")
             has_out = service != "เช่าจอดูบอล"
             slot_in, slot_out = (st.columns(2) if has_out else (st.container(), None))
 
@@ -321,21 +313,25 @@ with tab1:
                 if len(in_files) > 2:
                     st.warning("ใช้ได้สูงสุด 2 ใบ ระบบจะใช้ 2 ใบแรก")
                     in_files = in_files[:2]
-                # การแลกไอดีใช้เรทตายตัว ไม่ต้องอ่านยอดเข้า (ประหยัดโควต้า AI)
-                in_reads = slip_reads(in_files, auto_ai and service != "การแลกไอดี", "in")
+                for f in in_files:
+                    st.image(f, width=170)
 
-            out_file, out_reads = None, []
+            out_file = None
             if has_out:
                 with slot_out:
                     st.markdown("**❤️ สลิปเงินออก** <span class='mm-tag'>ถ้าโอนให้ผู้ขายแล้ว</span>",
                                 unsafe_allow_html=True)
                     out_file = st.file_uploader("สลิปเงินออก", type=IMG_TYPES, key=K("out_file"),
                                                 label_visibility="collapsed")
-                    out_reads = slip_reads([out_file] if out_file else [], auto_ai, "out")
+                    if out_file:
+                        st.image(out_file, width=170)
 
-            if service != "การแลกไอดี":
-                apply_reads(in_reads, K("income"), K("in_applied"))
-            apply_reads(out_reads, K("out_amount"), K("out_applied"))
+            # >>> จุดเสียบระบบอ่านสลิปของคุณ <<<
+            # ไฟล์ที่อัปโหลด: in_files (list 0-2 ใบ), out_file (1 ใบหรือ None)
+            # อ่านยอดแล้วใส่ช่องกรอกด้านล่างก่อนถึง Step 3 ได้ด้วย:
+            #   st.session_state[K("income")]     = ยอดเงินเข้า   (รับกลางไอดี / เช่าจอดูบอล)
+            #   st.session_state[K("out_amount")] = ยอดโอนออก
+            # (ต้องตั้งค่าก่อนที่ st.number_input ของ Step 3 จะถูกสร้างในรอบนั้น)
 
         # ---------- Step 3 ----------
         with st.container(border=True):
@@ -363,7 +359,7 @@ with tab1:
                 is_no_note = c2.checkbox(f"✍️ ลืมเขียนโน๊ต (+{fmt(lg.NO_NOTE_FEE)})", key=K("nonote"))
                 out_amount = st.number_input("💸 ยอดโอนออกจริง (ใส่ 0 ถ้ายังไม่ได้โอน ระบบจะคำนวณให้)",
                                              min_value=0.0, step=10.0, format="%.2f", key=K("out_amount"))
-                note = st.text_input("📌 ชื่อลูกค้า / รหัสไอดี", key=K("note"),
+                note = st.text_input("📌 ชื่อลูกค้า / รหัสไอดี", key=K("note"), max_chars=200,
                                      placeholder="เช่น FC Mobile บัญชีคุณบาส")
                 calc = lg.compute_middleman(income, is_yok, is_no_note, include_fee, out_amount)
 
@@ -375,7 +371,7 @@ with tab1:
                 is_no_note = c2.checkbox(f"✍️ ลืมเขียนโน๊ต (+{fmt(lg.NO_NOTE_FEE)})", key=K("nonote_ex"))
                 out_amount = st.number_input("💸 ยอดโอนออก (ถ้ามี)", min_value=0.0, step=10.0,
                                              format="%.2f", key=K("out_amount"))
-                note = st.text_input("📌 รายละเอียด", key=K("note"),
+                note = st.text_input("📌 รายละเอียด", key=K("note"), max_chars=200,
                                      placeholder="เช่น แลกบัญชี A กับ บัญชี B")
                 calc = lg.compute_exchange(exchange_rate, is_yok, is_no_note, out_amount)
                 income = calc.income
@@ -383,7 +379,7 @@ with tab1:
             else:
                 income = st.number_input("💰 ยอดเงินเข้าทั้งหมด (บาท)", min_value=0.0, step=10.0,
                                          format="%.2f", key=K("income"))
-                note = st.text_input("📌 ช่องที่เช่า / แมตช์", key=K("note"),
+                note = st.text_input("📌 ช่องที่เช่า / แมตช์", key=K("note"), max_chars=200,
                                      placeholder="เช่น พรีเมียร์ลีก บัญชีคุณเอ")
                 calc = lg.compute_rental(income)
 
@@ -461,45 +457,61 @@ with tab1:
                 st.error("❌ ยอดโอนออกมากกว่ายอดเงินเข้า ตรวจสอบตัวเลขอีกครั้ง")
             else:
                 with st.spinner("⏳ กำลังบันทึกข้อมูลและสลิป..."):
-                    new_id = db.get_next_id(db.load_data(fresh=True))
-                    in1 = in_files[0] if len(in_files) > 0 else None
-                    in2 = in_files[1] if len(in_files) > 1 else None
-                    url_in1 = im.upload_image(in1, subfolder="incoming", prefix=f"{new_id}_in1") if in1 else ""
-                    url_in2 = im.upload_image(in2, subfolder="incoming", prefix=f"{new_id}_in2") if in2 else ""
-                    url_out = im.upload_image(out_file, subfolder="outgoing", prefix=f"{new_id}_out") if out_file else ""
+                    tag = lg.now_th().strftime("%Y%m%d%H%M%S")
+                    plan = [(in_files[0] if len(in_files) > 0 else None, "incoming", "in1"),
+                            (in_files[1] if len(in_files) > 1 else None, "incoming", "in2"),
+                            (out_file, "outgoing", "out")]
+                    urls, upload_err = {}, ""
+                    for f, sub, pre in plan:
+                        if f is None:
+                            urls[pre] = ""
+                            continue
+                        u = im.upload_image(f, subfolder=sub, prefix=f"{tag}_{pre}")
+                        if not u:
+                            upload_err = im.last_error or "อัปโหลดสลิปไม่สำเร็จ"
+                            break
+                        urls[pre] = u
 
-                    parts = []
-                    if service == "รับกลางไอดี":
-                        parts.append(f"ค่ากลาง {fmt(calc.base_fee)}")
-                        if include_fee:
-                            parts.append("ยอดรวมค่ากลางแล้ว")
-                    if service == "การแลกไอดี":
-                        parts.append(f"เรทแลก {exchange_rate}฿")
-                    if service in ("รับกลางไอดี", "การแลกไอดี"):
-                        if is_yok: parts.append(f"โยกไอดี (+{fmt(lg.YOK_FEE)})")
-                        if is_no_note: parts.append(f"ลืมโน๊ต (+{fmt(lg.NO_NOTE_FEE)})")
-                    if service == "รับกลางไอดี" and calc.from_slip and abs(calc.diff or 0) >= 0.01:
-                        parts.append(f"ส่วนต่างจากเรท {calc.diff:+,.2f}")
-                    if note.strip():
-                        parts.append(note.strip())
+                    new_id = None
+                    if not upload_err:
+                        parts = []
+                        if service == "รับกลางไอดี":
+                            parts.append(f"ค่ากลาง {fmt(calc.base_fee)}")
+                            if include_fee:
+                                parts.append("ยอดรวมค่ากลางแล้ว")
+                        if service == "การแลกไอดี":
+                            parts.append(f"เรทแลก {exchange_rate}฿")
+                        if service in ("รับกลางไอดี", "การแลกไอดี"):
+                            if is_yok: parts.append(f"โยกไอดี (+{fmt(lg.YOK_FEE)})")
+                            if is_no_note: parts.append(f"ลืมโน๊ต (+{fmt(lg.NO_NOTE_FEE)})")
+                        if service == "รับกลางไอดี" and calc.from_slip and abs(calc.diff or 0) >= 0.01:
+                            parts.append(f"ส่วนต่างจากเรท {calc.diff:+,.2f}")
+                        if note.strip():
+                            parts.append(note.strip())
 
-                    ok = db.append_row({
-                        "ID": new_id,
-                        "วันที่": lg.now_th().strftime("%Y-%m-%d %H:%M"),
-                        "ประเภท": service,
-                        "รายละเอียด": " | ".join(parts),
-                        "ยอดเข้า": round(calc.income, 2),
-                        "ยอดออก": round(calc.expense, 2),
-                        "กำไร": round(calc.profit, 2),
-                        "สถานะโอนออก": "โอนแล้ว",
-                        "สลิปเข้า": url_in1,
-                        "สลิปเข้า 2": url_in2,
-                        "สลิปออก": url_out,
-                    })
-                if ok:
+                        new_id = db.append_row({
+                            "วันที่": lg.now_th().strftime("%Y-%m-%d %H:%M"),
+                            "ประเภท": service,
+                            "รายละเอียด": " | ".join(parts),
+                            "ยอดเข้า": round(calc.income, 2),
+                            "ยอดออก": round(calc.expense, 2),
+                            "กำไร": round(calc.profit, 2),
+                            "สถานะโอนออก": "โอนแล้ว",
+                            "สลิปเข้า": urls["in1"],
+                            "สลิปเข้า 2": urls["in2"],
+                            "สลิปออก": urls["out"],
+                        })
+                if upload_err:
+                    st.error(f"❌ {upload_err} — ยังไม่ได้บันทึกรายการ แก้ไขแล้วกดบันทึกอีกครั้ง")
+                elif new_id:
                     st.session_state["form_nonce"] = nonce + 1   # ล้างฟอร์มและสลิป
-                    flash(f"🎉 บันทึก #{new_id} ({service}) เข้า {fmt(calc.income)} ฿ · กำไร {fmt(calc.profit)} ฿ เรียบร้อย",
-                          balloons=True)
+                    msg = (f"🎉 บันทึก #{new_id} ({service}) เข้า {fmt(calc.income)} ฿ · "
+                           f"กำไร {fmt(calc.profit)} ฿ เรียบร้อย")
+                    if any(u and not u.startswith("https://") for u in urls.values()):
+                        flash(msg + " — ⚠️ สลิปถูกเก็บในเครื่องเซิร์ฟเวอร์ชั่วคราว (Cloudinary ยังไม่พร้อม) "
+                                    "อาจหายเมื่อรีบูตแอป", "warning")
+                    else:
+                        flash(msg, balloons=True)
                     st.rerun()
                 else:
                     st.error("❌ ส่งข้อมูลไป Google Sheets ไม่สำเร็จ")
@@ -520,6 +532,8 @@ with tab1:
 # ============================================================
 def record_card(row, key_prefix: str):
     rid = int(row["ID"])
+    rown = int(row["_row"])
+    kp = f"{key_prefix}_{rown}"
     t = row["dt"].strftime("%H:%M") if pd.notna(row["dt"]) else "--:--"
     typ = str(row["ประเภท"])
     title = (f"{SERVICE_ICON.get(typ, '•')} #{rid} · {t} · {typ} · เข้า {fmt(row['ยอดเข้า'])} · "
@@ -537,12 +551,12 @@ def record_card(row, key_prefix: str):
         with c2:
             with st.popover("🗑️ ลบรายการ"):
                 st.write(f"ลบรายการ #{rid} ออกจาก Google Sheets?")
-                if st.button("ยืนยันลบ", type="primary", key=f"{key_prefix}_del_{rid}"):
-                    if db.delete_row(rid):
+                if st.button("ยืนยันลบ", type="primary", key=f"{kp}_del_{rid}"):
+                    if db.delete_row(rid, rown):
                         flash(f"🗑️ ลบรายการ #{rid} แล้ว")
                         st.rerun()
                     else:
-                        st.error("ลบไม่สำเร็จ")
+                        st.error("ลบไม่สำเร็จ — ข้อมูลในชีทอาจถูกแก้จากที่อื่น กด “โหลดข้อมูลล่าสุด” แล้วลองใหม่")
 
         i1, i2, i3 = st.columns(3)
         with i1:
@@ -552,19 +566,21 @@ def record_card(row, key_prefix: str):
         with i3:
             render_slip_item(row["สลิปออก"], "สลิปออก")
 
-        if st.toggle("📷 แนบ/เปลี่ยนสลิป", key=f"{key_prefix}_tg_{rid}"):
+        if st.toggle("📷 แนบ/เปลี่ยนสลิป", key=f"{kp}_tg_{rid}"):
             u1, u2, u3 = st.columns(3)
-            r1 = u1.file_uploader("สลิปเข้า 1", type=IMG_TYPES, key=f"{key_prefix}_u1_{rid}")
-            r2 = u2.file_uploader("สลิปเข้า 2", type=IMG_TYPES, key=f"{key_prefix}_u2_{rid}")
-            r3 = u3.file_uploader("สลิปออก", type=IMG_TYPES, key=f"{key_prefix}_u3_{rid}")
-            if st.button("💾 บันทึกสลิป", key=f"{key_prefix}_save_{rid}"):
+            r1 = u1.file_uploader("สลิปเข้า 1", type=IMG_TYPES, key=f"{kp}_u1_{rid}")
+            r2 = u2.file_uploader("สลิปเข้า 2", type=IMG_TYPES, key=f"{kp}_u2_{rid}")
+            r3 = u3.file_uploader("สลิปออก", type=IMG_TYPES, key=f"{kp}_u3_{rid}")
+            if st.button("💾 บันทึกสลิป", key=f"{kp}_save_{rid}"):
                 changed = False
                 for f, colname, sub, pre in ((r1, "สลิปเข้า", "incoming", "in1"),
                                              (r2, "สลิปเข้า 2", "incoming", "in2"),
                                              (r3, "สลิปออก", "outgoing", "out")):
                     if f:
                         url = im.upload_image(f, subfolder=sub, prefix=f"{rid}_{pre}")
-                        if url and db.update_cell(rid, colname, url):
+                        if not url:
+                            st.error(f"❌ {im.last_error or 'อัปโหลดสลิปไม่สำเร็จ'}")
+                        elif db.update_cell(rid, colname, url, rown):
                             changed = True
                 if changed:
                     flash(f"✅ อัปเดตสลิป #{rid} แล้ว")
@@ -587,6 +603,9 @@ with tab2:
     if df_all.empty:
         st.info("ℹ️ ยังไม่มีรายการใน Google Sheets")
     else:
+        if st.button("🔄 โหลดข้อมูลล่าสุดจาก Google Sheets", key="refresh_data"):
+            db.clear_cache()
+            st.rerun()
         f1, f2 = st.columns([1.6, 1])
         q = f1.text_input("🔍 ค้นหาทุกวัน (ID / ชื่อลูกค้า / รายละเอียด)", key="hist_q", placeholder="พิมพ์เพื่อค้นหา...")
         ftype = f2.selectbox("ประเภท", ["ทั้งหมด"] + lg.SERVICES, key="hist_type")
@@ -659,7 +678,9 @@ with tab2:
                              hide_index=True)
 
         st.divider()
-        export = df_all.drop(columns=["dt", "day", "year", "month"], errors="ignore").sort_values("ID")
+        export = df_all.drop(columns=["dt", "day", "year", "month", "_row"], errors="ignore").sort_values("ID")
+        for _c in db.EXPORT_TEXT_COLS:      # กัน CSV Injection เมื่อเปิดด้วย Excel
+            export[_c] = export[_c].map(db.safe_text)
         stretch(st.download_button, "📥 ดาวน์โหลดข้อมูลทั้งหมด (.csv เปิดด้วย Excel ได้)",
                 data=export.to_csv(index=False).encode("utf-8-sig"),
                 file_name=f"money_manager_{now.strftime('%Y%m%d_%H%M')}.csv", mime="text/csv")
@@ -784,3 +805,8 @@ with tab3:
                                  round(float(ys["out"].sum()), 2), round(float(ys["profit"].sum()), 2)])
             if db.write_monthly_summary(rows_out):
                 st.success(f"✅ อัปเดตแท็บ “{db.MONTHLY_SHEET}” แล้ว")
+
+st.divider()
+if st.button("🚪 ออกจากระบบ", key="logout"):
+    st.session_state.clear()
+    st.rerun()

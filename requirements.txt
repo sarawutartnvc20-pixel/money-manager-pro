@@ -1,8 +1,7 @@
 streamlit>=1.36
 pandas
 altair
-google-genai
-gspread
+gspread>=6.0
 google-auth
 Pillow
 cloudinary
