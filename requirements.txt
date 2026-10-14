@@ -1,6 +1,7 @@
-streamlit
+streamlit>=1.36
 pandas
-google-generativeai
+altair
+google-genai
 gspread
 google-auth
 Pillow
