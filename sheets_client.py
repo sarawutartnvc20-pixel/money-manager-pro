@@ -7,14 +7,15 @@ import streamlit as st
 logger = logging.getLogger(__name__)
 logging.getLogger("gspread").setLevel(logging.ERROR)
 
-# ลำดับคอลัมน์มาตรฐาน 11 คอลัมน์ (คงเดิม เพื่อไม่ให้สูตรภาษีใน Google Sheets พัง)
+# ลำดับคอลัมน์มาตรฐาน 12 คอลัมน์ (คงเดิม เพื่อไม่ให้สูตรภาษีใน Google Sheets พัง)
 COL_MAP = {
     "ID": 0, "วันที่": 1, "ประเภท": 2, "รายละเอียด": 3,
     "ยอดเข้า": 4, "ยอดออก": 5, "กำไร": 6,
-    "สถานะโอนออก": 7, "สลิปเข้า": 8, "สลิปเข้า 2": 9, "สลิปออก": 10
+    "สถานะโอนออก": 7, "สลิปเข้า": 8, "สลิปเข้า 2": 9, "สลิปออก": 10,
+    "เกม": 11   # คอลัมน์ L เพิ่มใหม่ (ต่อท้ายของเดิม สูตรภาษีที่อ้างคอลัมน์ A–K ไม่กระทบ)
 }
-TEXT_COLS = ["วันที่", "ประเภท", "รายละเอียด", "สถานะโอนออก", "สลิปเข้า", "สลิปเข้า 2", "สลิปออก"]
-EXPORT_TEXT_COLS = ["ประเภท", "รายละเอียด", "สถานะโอนออก", "สลิปเข้า", "สลิปเข้า 2", "สลิปออก"]
+TEXT_COLS = ["วันที่", "ประเภท", "รายละเอียด", "สถานะโอนออก", "สลิปเข้า", "สลิปเข้า 2", "สลิปออก", "เกม"]
+EXPORT_TEXT_COLS = ["ประเภท", "รายละเอียด", "สถานะโอนออก", "สลิปเข้า", "สลิปเข้า 2", "สลิปออก", "เกม"]
 MONTHLY_SHEET = "สรุปรายเดือน"
 
 # ใช้ RLock เพื่อป้องกันการเขียนชนกันภายในแอปเดียวกัน
@@ -154,8 +155,13 @@ def append_row(row_dict: dict):
 
             # คำนวณแถวถัดไปเองจากคอลัมน์ A (ไม่เชื่อ tableRange ของ append_row ซึ่งเคยเขียนทับแถวเดิม)
             next_row = max(len(col_a) + 1, 2)
-            sh.update(range_name=f"A{next_row}:K{next_row}", values=[values],
+            sh.update(range_name=f"A{next_row}:L{next_row}", values=[values],
                       value_input_option="USER_ENTERED")
+            try:   # ใส่หัวคอลัมน์ L ให้อัตโนมัติถ้ายังไม่มี
+                if len(sh.row_values(1)) < 12 or not str(sh.cell(1, 12).value or "").strip():
+                    sh.update_cell(1, 12, "เกม")
+            except Exception:
+                logger.warning("เพิ่มหัวคอลัมน์ 'เกม' ไม่สำเร็จ")
             return new_id
         except Exception as e:
             _fail("บันทึกลง Google Sheets ไม่สำเร็จ", e)

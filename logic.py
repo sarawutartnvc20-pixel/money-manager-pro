@@ -18,18 +18,44 @@ import pandas as pd
 # ------------------------------------------------------------
 TZ = ZoneInfo("Asia/Bangkok")
 
-# (ยอดสูงสุดของขั้น, ค่ากลาง)
-FEE_TIERS: list[tuple[float, float]] = [
-    (1490, 60),
-    (2490, 80),
-    (3990, 100),
-    (5990, 120),
-    (7990, 140),
-    (9999, 160),
-]
-PERCENT_RATE = 0.02          # 10,000 ขึ้นไป คิด 2%
-YOK_FEE = 40.0               # ค่าโยกเฟส/โยกเมล (ไม่รวมค่ากลาง)
+YOK_FEE = 40.0               # ค่าโยกเฟส/โยกเมล FC Mobile (ไม่รวมค่ากลาง)
 NO_NOTE_FEE = 5.0            # ลืมเขียนโน๊ต
+INF = float("inf")
+
+
+@dataclass(frozen=True)
+class Game:
+    """เรทค่ากลางและค่าบริการเสริมของแต่ละเกม — เพิ่มเกมใหม่แค่เพิ่มในดิก GAMES ด้านล่าง"""
+    name: str
+    icon: str
+    color: str
+    tiers: tuple                 # ((ยอดไอดีสูงสุดของขั้น, ค่ากลาง), ...)  ขั้นสุดท้ายใส่ INF ได้
+    percent: float | None = None  # ถ้ายอดเกินขั้นสุดท้ายให้คิดเป็น % (ใช้เมื่อขั้นสุดท้ายไม่ใช่ INF)
+    extras: tuple = ()           # ((key, ป้ายชื่อ, จำนวนเงิน), ...) ติ๊กเพิ่มได้ ไม่รวมค่ากลาง (รับกลางไอดี)
+    exchange_rates: tuple = ()   # เรทค่าแลกไอดี เช่น (60, 200)
+    exchange_extras: tuple = ()  # ค่าบริการเสริมของการแลกไอดี
+
+
+GAMES: dict[str, Game] = {
+    "FC Mobile": Game(
+        "FC Mobile", "⚽", "#2a78d6",
+        tiers=((1490, 60), (2490, 80), (3990, 100), (5990, 120), (7990, 140), (9999, 160)),
+        percent=0.02,   # 10,000 ขึ้นไป คิด 2%
+        extras=(("yok", "🔄 โยกเฟส/โยกเมล", YOK_FEE), ("nonote", "✍️ ลืมเขียนโน๊ต", NO_NOTE_FEE)),
+        exchange_rates=(60, 200),
+        exchange_extras=(("yok", "🔄 โยกเฟส/โยกเมล", YOK_FEE), ("nonote", "✍️ ลืมเขียนโน๊ต", NO_NOTE_FEE)),
+    ),
+    "eFootball": Game(
+        "eFootball", "🎮", "#e8590c",
+        tiers=((600, 20), (1200, 30), (1999, 40), (INF, 50)),
+        extras=(("wallet", "👛 โอนวอเลท", 10.0), ("nonote", "✍️ ลืมเขียนโน๊ต", NO_NOTE_FEE)),
+        exchange_rates=(50,),
+        exchange_extras=(("nonote", "✍️ ลืมเขียนโน๊ต", NO_NOTE_FEE),),
+    ),
+}
+DEFAULT_GAME = "FC Mobile"      # รายการเก่าที่ยังไม่มีชื่อเกมในชีท นับเป็นเกมนี้
+FEE_TIERS = GAMES[DEFAULT_GAME].tiers
+PERCENT_RATE = GAMES[DEFAULT_GAME].percent
 
 SERVICES = ["รับกลางไอดี", "การแลกไอดี", "เช่าจอดูบอล"]
 
@@ -52,12 +78,15 @@ def today_th() -> date:
 # ------------------------------------------------------------
 # ค่ากลาง
 # ------------------------------------------------------------
-def tier_fee(price: float) -> float:
-    """ค่ากลางตามตารางเรท โดยเทียบจาก 'ยอดไอดี' (price)"""
-    for limit, fee in FEE_TIERS:
+def tier_fee(price: float, game: str = DEFAULT_GAME) -> float:
+    """ค่ากลางตามตารางเรทของเกม โดยเทียบจาก 'ยอดไอดี' (price)"""
+    g = GAMES[game]
+    for limit, fee in g.tiers:
         if price <= limit:
             return float(fee)
-    return round(price * PERCENT_RATE, 2)
+    if g.percent:
+        return round(price * g.percent, 2)
+    return float(g.tiers[-1][1])
 
 
 @dataclass
@@ -69,43 +98,46 @@ class FeeResult:
     warning: str = ""
 
 
-def calc_middleman_fee(amount: float, extras: float = 0.0, includes_fee: bool = False) -> FeeResult:
+def calc_middleman_fee(amount: float, extras: float = 0.0, includes_fee: bool = False,
+                       game: str = DEFAULT_GAME) -> FeeResult:
     """
     includes_fee=False  (ยอดยังไม่รวมค่ากลาง)  -> เทียบเรทจากยอดที่โอนมาตรง ๆ
-                         เช่น โอน 1491 -> เรท 80
+                         เช่น FC Mobile โอน 1491 -> เรท 80
     includes_fee=True   (ยอดรวมค่ากลางแล้ว)   -> หักค่ากลาง (และค่าบริการเสริม) ออกก่อนแล้วค่อยเทียบเรท
-                         เช่น โอน 1500 -> 1500-60 = 1440 ยังไม่เกิน 1490 -> เรท 60
+                         เช่น FC Mobile โอน 1500 -> 1500-60 = 1440 ยังไม่เกิน 1490 -> เรท 60
     """
+    g = GAMES[game]
     amount = float(amount or 0)
     if not includes_fee:
-        return FeeResult(tier_fee(amount), amount)
+        return FeeResult(tier_fee(amount, game), amount)
 
     net = amount - float(extras or 0)
-    lowest = float(FEE_TIERS[0][1])
+    lowest = float(g.tiers[0][1])
     if net <= lowest:
         return FeeResult(lowest, max(net - lowest, 0.0),
                          warning="ยอดโอนน้อยกว่าค่ากลางขั้นต่ำ ตรวจสอบยอดอีกครั้ง")
 
-    # 1) หาเรทที่ "ลงตัว" : ค่ากลาง f ที่ทำให้ tier(net - f) == f (มีได้แค่ค่าเดียว)
-    for _, fee in FEE_TIERS:
-        if tier_fee(net - fee) == fee:
+    # 1) หาเรทที่ "ลงตัว" : ค่ากลาง f ที่ทำให้ tier(net - f) == f
+    for _, fee in g.tiers:
+        if tier_fee(net - fee, game) == fee:
             return FeeResult(float(fee), net - fee)
-    price = net / (1 + PERCENT_RATE)
-    if price > FEE_TIERS[-1][0]:
-        fee = round(net - price, 2)
-        return FeeResult(fee, round(price, 2))
+    if g.percent:
+        price = net / (1 + g.percent)
+        if price > g.tiers[-1][0]:
+            fee = round(net - price, 2)
+            return FeeResult(fee, round(price, 2))
 
-    # 2) ยอดตกช่วงคาบเกี่ยว (เช่น 1,551–1,569) : ใช้เรทที่สูงกว่าเพื่อไม่ให้ร้านคิดขาด
+    # 2) ยอดตกช่วงคาบเกี่ยว (เช่น FC Mobile 1,551–1,569) : ใช้เรทที่สูงกว่าเพื่อไม่ให้ร้านคิดขาด
     #    และแจ้งเตือนให้เช็กกับลูกค้า
     prev = None
-    for _, fee in FEE_TIERS:
-        if tier_fee(net - fee) <= fee:
+    for _, fee in g.tiers:
+        if tier_fee(net - fee, game) <= fee:
             return FeeResult(float(fee), net - fee, ambiguous=True, alt_fee=prev,
                              warning="ยอดอยู่ช่วงคาบเกี่ยวระหว่าง 2 เรท ระบบเลือกเรทที่สูงกว่า")
         prev = float(fee)
-    fee = round(net * PERCENT_RATE / (1 + PERCENT_RATE), 2)
+    fee = round(net * g.percent / (1 + g.percent), 2) if g.percent else float(g.tiers[-1][1])
     return FeeResult(fee, round(net - fee, 2), ambiguous=True, alt_fee=prev,
-                     warning="ยอดอยู่ช่วงคาบเกี่ยวระหว่างเรท 160 กับ 2% ตรวจสอบกับลูกค้า")
+                     warning="ยอดอยู่ช่วงคาบเกี่ยวระหว่างเรท ตรวจสอบกับลูกค้า")
 
 
 @dataclass
@@ -128,14 +160,14 @@ def extras_of(is_yok: bool, is_no_note: bool) -> float:
     return (YOK_FEE if is_yok else 0.0) + (NO_NOTE_FEE if is_no_note else 0.0)
 
 
-def compute_middleman(income: float, is_yok: bool, is_no_note: bool,
-                      includes_fee: bool, actual_out: float | None = None) -> Calc:
-    extras = extras_of(is_yok, is_no_note)
-    fr = calc_middleman_fee(income, extras, includes_fee)
+def compute_middleman(income: float, extras: float, includes_fee: bool,
+                      actual_out: float | None = None, game: str = DEFAULT_GAME) -> Calc:
+    """extras = ผลรวมค่าบริการเสริมที่ติ๊กไว้ (โยก/โน๊ต/วอเลท ฯลฯ)"""
+    fr = calc_middleman_fee(income, extras, includes_fee, game)
     expected_profit = fr.base_fee + extras
     expected_expense = max(0.0, income - expected_profit)
 
-    other = calc_middleman_fee(income, extras, not includes_fee)
+    other = calc_middleman_fee(income, extras, not includes_fee, game)
     other_profit = other.base_fee + extras
 
     c = Calc(income=income, expense=expected_expense, profit=expected_profit,
@@ -150,13 +182,12 @@ def compute_middleman(income: float, is_yok: bool, is_no_note: bool,
     return c
 
 
-def compute_exchange(rate: float, is_yok: bool, is_no_note: bool,
-                     actual_out: float | None = None) -> Calc:
-    extras = extras_of(is_yok, is_no_note)
-    income = float(rate) + extras
+def compute_exchange(rate: float, extras: float, actual_out: float | None = None) -> Calc:
+    """การแลกไอดี: รายรับ = เรทค่าแลก + ค่าบริการเสริม"""
+    income = float(rate) + float(extras or 0)
     out = float(actual_out or 0)
     return Calc(income=income, expense=out, profit=round(income - out, 2),
-                base_fee=float(rate), extra_fee=extras,
+                base_fee=float(rate), extra_fee=float(extras or 0),
                 expected_profit=income, expected_expense=0.0, from_slip=out > 0)
 
 
@@ -223,10 +254,51 @@ def with_dates(df: pd.DataFrame) -> pd.DataFrame:
         ts.strftime("%Y-%m-%d %H:%M") if pd.notna(ts) else ("" if raw is None else str(raw))
         for ts, raw in zip(out["dt"], out["วันที่"])
     ]
+    if "เกม" not in out.columns:
+        out["เกม"] = ""
+    # รับกลางไอดี/แลกไอดีที่ยังไม่มีชื่อเกม (รายการเก่า) นับเป็น FC Mobile
+    out["เกม"] = [
+        (g if g in GAMES else DEFAULT_GAME) if t in GAME_SERVICES else (g if g in GAMES else "")
+        for t, g in zip(out["ประเภท"], out["เกม"])
+    ]
+    out["cat"] = [category_of(t, g) for t, g in zip(out["ประเภท"], out["เกม"])]
     out["day"] = out["dt"].dt.date
     out["year"] = out["dt"].dt.year
     out["month"] = out["dt"].dt.month
     return out
+
+
+GAME_SERVICES = ("รับกลางไอดี", "การแลกไอดี")     # บริการที่แยกตามเกม
+EX_PREFIX = "แลก · "
+CATEGORIES = list(GAMES) + [EX_PREFIX + g for g in GAMES] + ["เช่าจอดูบอล"]
+
+
+def category_of(service: str, game: str) -> str:
+    """รหัสหมวดสำหรับจัดกลุ่ม: รับกลาง -> ชื่อเกม, แลกไอดี -> 'แลก · ชื่อเกม', อื่น ๆ -> ชื่อบริการ"""
+    if service == "รับกลางไอดี":
+        return game
+    if service == "การแลกไอดี":
+        return EX_PREFIX + game
+    return service
+
+
+def category_label(cat: str) -> str:
+    if cat in GAMES:
+        return f"💎 รับกลาง · {cat}"
+    if cat.startswith(EX_PREFIX):
+        return f"🔄 แลกไอดี · {cat[len(EX_PREFIX):]}"
+    return {"เช่าจอดูบอล": "⚽ เช่าจอดูบอล"}.get(cat, f"• {cat}" if cat else "• อื่น ๆ")
+
+
+EX_COLORS = {"FC Mobile": "#6250d6", "eFootball": "#c2255c"}
+
+
+def category_color(cat: str) -> str:
+    if cat in GAMES:
+        return GAMES[cat].color
+    if cat.startswith(EX_PREFIX):
+        return EX_COLORS.get(cat[len(EX_PREFIX):], "#6250d6")
+    return {"เช่าจอดูบอล": "#1baf7a"}.get(cat, "#94a3b8")
 
 
 def th_date(d: date, weekday: bool = True, full_month: bool = False) -> str:

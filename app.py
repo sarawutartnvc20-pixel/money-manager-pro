@@ -299,6 +299,12 @@ with tab1:
                 "บริการ", lg.SERVICES, horizontal=True, label_visibility="collapsed",
                 format_func=lambda s: f"{SERVICE_ICON[s]} {s}", key=K("service"),
             )
+            game = lg.DEFAULT_GAME
+            if service in lg.GAME_SERVICES:
+                st.markdown("**เลือกเกม**")
+                game = st.radio("เกม", list(lg.GAMES), horizontal=True, label_visibility="collapsed",
+                                format_func=lambda g: f"{lg.GAMES[g].icon} {g}", key=K("game"))
+            G = lg.GAMES[game]
 
         # ---------- Step 2 ----------
         with st.container(border=True):
@@ -338,9 +344,9 @@ with tab1:
             step(3, "ยอดเงิน & รายละเอียด")
             st.session_state.setdefault(K("income"), 0.0)
             st.session_state.setdefault(K("out_amount"), 0.0)
-            is_yok = is_no_note = False
+            sel_extras = []
             include_fee = False
-            exchange_rate = 60
+            exchange_rate = 0
             out_amount = 0.0
 
             if service == "รับกลางไอดี":
@@ -350,30 +356,36 @@ with tab1:
                     "ยอดที่ลูกค้าโอนมา",
                     ["exclude", "include"], horizontal=True, key=K("fee_mode"),
                     format_func=lambda m: "ยังไม่รวมค่ากลาง" if m == "exclude" else "รวมค่ากลางแล้ว",
-                    help="ยังไม่รวม: เทียบเรทจากยอดที่โอนมาเลย (1,491 → เรท 80)\n\n"
-                         "รวมแล้ว: หักค่ากลาง/ค่าโยกออกก่อนแล้วค่อยเทียบเรท (1,500 → 1,440 → เรท 60)",
+                    help=("ยังไม่รวม: เทียบเรทจากยอดที่โอนมาเลย (1,491 → เรท 80)\n\n"
+                          "รวมแล้ว: หักค่ากลาง/ค่าบริการเสริมออกก่อนแล้วค่อยเทียบเรท (1,500 → 1,440 → เรท 60)")
+                         if game == "FC Mobile" else
+                         ("ยังไม่รวม: เทียบเรทจากยอดที่โอนมาเลย (601 → เรท 30)\n\n"
+                          "รวมแล้ว: หักค่ากลาง/ค่าบริการเสริมออกก่อนแล้วค่อยเทียบเรท (620 → 600 → เรท 20)"),
                 )
                 include_fee = mode == "include"
-                c1, c2 = st.columns(2)
-                is_yok = c1.checkbox(f"🔄 โยกเฟส/โยกเมล (+{fmt(lg.YOK_FEE)})", key=K("yok"))
-                is_no_note = c2.checkbox(f"✍️ ลืมเขียนโน๊ต (+{fmt(lg.NO_NOTE_FEE)})", key=K("nonote"))
+                ecols = st.columns(max(len(G.extras), 1))
+                for ecol, (xk, xlabel, xamt) in zip(ecols, G.extras):
+                    if ecol.checkbox(f"{xlabel} (+{fmt(xamt)})", key=K(f"x_{game}_{xk}")):
+                        sel_extras.append((xlabel, xamt))
                 out_amount = st.number_input("💸 ยอดโอนออกจริง (ใส่ 0 ถ้ายังไม่ได้โอน ระบบจะคำนวณให้)",
                                              min_value=0.0, step=10.0, format="%.2f", key=K("out_amount"))
                 note = st.text_input("📌 ชื่อลูกค้า / รหัสไอดี", key=K("note"), max_chars=200,
-                                     placeholder="เช่น FC Mobile บัญชีคุณบาส")
-                calc = lg.compute_middleman(income, is_yok, is_no_note, include_fee, out_amount)
+                                     placeholder=f"เช่น {game} บัญชีคุณบาส")
+                calc = lg.compute_middleman(income, sum(a for _, a in sel_extras), include_fee,
+                                            out_amount, game)
 
             elif service == "การแลกไอดี":
-                exchange_rate = st.radio("เรทค่าแลกไอดี", [60, 200], horizontal=True, key=K("ex_rate"),
-                                         format_func=lambda x: f"🏷️ {x} บาท")
-                c1, c2 = st.columns(2)
-                is_yok = c1.checkbox(f"🔄 โยกเฟส/โยกเมล (+{fmt(lg.YOK_FEE)})", key=K("yok_ex"))
-                is_no_note = c2.checkbox(f"✍️ ลืมเขียนโน๊ต (+{fmt(lg.NO_NOTE_FEE)})", key=K("nonote_ex"))
+                exchange_rate = st.radio("เรทค่าแลกไอดี", list(G.exchange_rates), horizontal=True,
+                                         key=K(f"ex_rate_{game}"), format_func=lambda x: f"🏷️ {fmt(x)} บาท")
+                ecols = st.columns(max(len(G.exchange_extras), 1))
+                for ecol, (xk, xlabel, xamt) in zip(ecols, G.exchange_extras):
+                    if ecol.checkbox(f"{xlabel} (+{fmt(xamt)})", key=K(f"xe_{game}_{xk}")):
+                        sel_extras.append((xlabel, xamt))
                 out_amount = st.number_input("💸 ยอดโอนออก (ถ้ามี)", min_value=0.0, step=10.0,
                                              format="%.2f", key=K("out_amount"))
                 note = st.text_input("📌 รายละเอียด", key=K("note"), max_chars=200,
                                      placeholder="เช่น แลกบัญชี A กับ บัญชี B")
-                calc = lg.compute_exchange(exchange_rate, is_yok, is_no_note, out_amount)
+                calc = lg.compute_exchange(exchange_rate, sum(a for _, a in sel_extras), out_amount)
                 income = calc.income
 
             else:
@@ -397,10 +409,8 @@ with tab1:
             rows.append(f'<div class="mm-row sm"><span>ค่ากลาง · ยอดไอดี {fmt(fr.price)} '
                         f'<span class="mm-tag">{mode_txt}</span></span>'
                         f'<span>{fmt(calc.base_fee)} ฿</span></div>')
-            if is_yok:
-                rows.append(f'<div class="mm-row sm"><span>ค่าโยกเฟส/เมล</span><span>{fmt(lg.YOK_FEE)} ฿</span></div>')
-            if is_no_note:
-                rows.append(f'<div class="mm-row sm"><span>ลืมเขียนโน๊ต</span><span>{fmt(lg.NO_NOTE_FEE)} ฿</span></div>')
+            for xlabel, xamt in sel_extras:
+                rows.append(f'<div class="mm-row sm"><span>{esc(xlabel)}</span><span>{fmt(xamt)} ฿</span></div>')
 
             if calc.income > 0:
                 if fr.warning:
@@ -409,8 +419,7 @@ with tab1:
                 if calc.from_slip:
                     if abs(calc.diff) < 0.01:
                         parts = [f"ค่ากลาง {fmt(calc.base_fee)}"]
-                        if is_yok: parts.append(f"โยก {fmt(lg.YOK_FEE)}")
-                        if is_no_note: parts.append(f"โน๊ต {fmt(lg.NO_NOTE_FEE)}")
+                        parts += [f"{xl.split(' ', 1)[-1]} {fmt(xa)}" for xl, xa in sel_extras]
                         notes.append(("ok", f"✅ ยอดโอนออกถูกต้อง: เข้า {fmt(calc.income)} − ออก {fmt(calc.expense)} "
                                             f"= {fmt(calc.profit)} ฿ ({' + '.join(parts)})"))
                     else:
@@ -421,10 +430,10 @@ with tab1:
                         if calc.other_mode_profit is not None and abs(calc.other_mode_profit - calc.profit) < 0.01:
                             other = "รวมค่ากลางแล้ว" if not include_fee else "ยังไม่รวมค่ากลาง"
                             hints.append(f"ตรงกับการคิดแบบ “{other}” — ลองเปลี่ยนตัวเลือกด้านซ้าย")
-                        if not is_yok and abs(calc.diff - lg.YOK_FEE) < 0.01:
-                            hints.append("ส่วนต่างเท่าค่าโยก 40 — ลืมติ๊กโยกเฟส/เมลหรือเปล่า?")
-                        if not is_no_note and abs(calc.diff - lg.NO_NOTE_FEE) < 0.01:
-                            hints.append("ส่วนต่างเท่าค่าลืมโน๊ต 5 — ลืมติ๊กหรือเปล่า?")
+                        chosen = {xl for xl, _ in sel_extras}
+                        for xl, _k, xa in [(l, k, a) for k, l, a in G.extras]:
+                            if xl not in chosen and abs(calc.diff - xa) < 0.01:
+                                hints.append(f"ส่วนต่างเท่า{xl.split(' ', 1)[-1]} {fmt(xa)} — ลืมติ๊กหรือเปล่า?")
                         if hints:
                             msg += "<br>💡 " + "<br>💡 ".join(hints)
                         notes.append(("warn", msg))
@@ -434,15 +443,15 @@ with tab1:
 
         elif service == "การแลกไอดี":
             rows.append(f'<div class="mm-row sm"><span>เรทค่าแลกไอดี</span><span>{fmt(calc.base_fee)} ฿</span></div>')
-            if calc.extra_fee:
-                rows.append(f'<div class="mm-row sm"><span>ค่าบริการเสริม</span><span>{fmt(calc.extra_fee)} ฿</span></div>')
+            for xlabel, xamt in sel_extras:
+                rows.append(f'<div class="mm-row sm"><span>{esc(xlabel)}</span><span>{fmt(xamt)} ฿</span></div>')
             rows.append(f'<div class="mm-row"><span>💸 ยอดโอนออก</span><b>{fmt(calc.expense)} ฿</b></div>')
         else:
             rows.append('<div class="mm-row"><span>💸 ยอดโอนออก</span><b>0 ฿</b></div>')
 
         note_html = "".join(f'<div class="mm-note {k}">{m}</div>' for k, m in notes)
         st.markdown(
-            f'<div class="mm-card"><h4>{SERVICE_ICON[service]} สรุปรายการ · {esc(service)}</h4>'
+            f'<div class="mm-card"><h4>{SERVICE_ICON[service]} สรุปรายการ · {esc(service)}{esc(' · ' + game) if service in lg.GAME_SERVICES else ''}</h4>'
             f'{"".join(rows)}'
             f'<div class="mm-profit"><span class="l">📈 กำไรของร้าน</span><span class="v">{fmt(calc.profit)} ฿</span></div>'
             f'{note_html}</div>',
@@ -480,10 +489,9 @@ with tab1:
                             if include_fee:
                                 parts.append("ยอดรวมค่ากลางแล้ว")
                         if service == "การแลกไอดี":
-                            parts.append(f"เรทแลก {exchange_rate}฿")
-                        if service in ("รับกลางไอดี", "การแลกไอดี"):
-                            if is_yok: parts.append(f"โยกไอดี (+{fmt(lg.YOK_FEE)})")
-                            if is_no_note: parts.append(f"ลืมโน๊ต (+{fmt(lg.NO_NOTE_FEE)})")
+                            parts.append(f"เรทแลก {fmt(exchange_rate)}฿")
+                        if service in lg.GAME_SERVICES:
+                            parts += [f"{xl.split(' ', 1)[-1]} (+{fmt(xa)})" for xl, xa in sel_extras]
                         if service == "รับกลางไอดี" and calc.from_slip and abs(calc.diff or 0) >= 0.01:
                             parts.append(f"ส่วนต่างจากเรท {calc.diff:+,.2f}")
                         if note.strip():
@@ -492,6 +500,7 @@ with tab1:
                         new_id = db.append_row({
                             "วันที่": lg.now_th().strftime("%Y-%m-%d %H:%M"),
                             "ประเภท": service,
+                            "เกม": game if service in lg.GAME_SERVICES else "",
                             "รายละเอียด": " | ".join(parts),
                             "ยอดเข้า": round(calc.income, 2),
                             "ยอดออก": round(calc.expense, 2),
@@ -505,7 +514,7 @@ with tab1:
                     st.error(f"❌ {upload_err} — ยังไม่ได้บันทึกรายการ แก้ไขแล้วกดบันทึกอีกครั้ง")
                 elif new_id:
                     st.session_state["form_nonce"] = nonce + 1   # ล้างฟอร์มและสลิป
-                    msg = (f"🎉 บันทึก #{new_id} ({service}) เข้า {fmt(calc.income)} ฿ · "
+                    msg = (f"🎉 บันทึก #{new_id} ({service}{' · ' + game if service in lg.GAME_SERVICES else ''}) เข้า {fmt(calc.income)} ฿ · "
                            f"กำไร {fmt(calc.profit)} ฿ เรียบร้อย")
                     if any(u and not u.startswith("https://") for u in urls.values()):
                         flash(msg + " — ⚠️ สลิปถูกเก็บในเครื่องเซิร์ฟเวอร์ชั่วคราว (Cloudinary ยังไม่พร้อม) "
@@ -517,14 +526,20 @@ with tab1:
                     st.error("❌ ส่งข้อมูลไป Google Sheets ไม่สำเร็จ")
 
         with st.expander("📋 ตารางเรทค่ากลาง"):
-            lo = 0
-            lines = []
-            for limit, fee in lg.FEE_TIERS:
-                lines.append(f"| {fmt(lo)} – {fmt(limit)} | {fmt(fee)} ฿ |")
-                lo = limit + 1
-            lines.append(f"| {fmt(lo)} ขึ้นไป | {int(lg.PERCENT_RATE * 100)}% |")
-            st.markdown("| ยอดไอดี | ค่ากลาง |\n|---|---|\n" + "\n".join(lines) +
-                        f"\n\nค่าโยกเฟส/โยกเมล **+{fmt(lg.YOK_FEE)}** (ไม่รวมค่ากลาง) · ลืมเขียนโน๊ต **+{fmt(lg.NO_NOTE_FEE)}**")
+            for gname, gm in lg.GAMES.items():
+                lo, lines = 0, []
+                for limit, fee in gm.tiers:
+                    lines.append(f"| {fmt(lo)} ขึ้นไป | {fmt(fee)} ฿ |" if limit == lg.INF
+                                 else f"| {fmt(lo)} – {fmt(limit)} | {fmt(fee)} ฿ |")
+                    lo = limit + 1
+                if gm.percent:
+                    lines.append(f"| {fmt(lo)} ขึ้นไป | {int(gm.percent * 100)}% |")
+                extra_txt = " · ".join(f"{l.split(' ', 1)[-1]} **+{fmt(a)}**" for _, l, a in gm.extras)
+                ex_rates = " / ".join(fmt(r) for r in gm.exchange_rates)
+                ex_extra = " · ".join(f"{l.split(' ', 1)[-1]} **+{fmt(a)}**" for _, l, a in gm.exchange_extras)
+                st.markdown(f"**{gm.icon} {gname}**\n\n| ยอดไอดี | ค่ากลาง |\n|---|---|\n" + "\n".join(lines) +
+                            f"\n\nรับกลาง: {extra_txt} (ไม่รวมค่ากลาง)"
+                            f"\n\nแลกไอดี: **{ex_rates} บาท** · {ex_extra}")
 
 
 # ============================================================
@@ -536,7 +551,7 @@ def record_card(row, key_prefix: str):
     kp = f"{key_prefix}_{rown}"
     t = row["dt"].strftime("%H:%M") if pd.notna(row["dt"]) else "--:--"
     typ = str(row["ประเภท"])
-    title = (f"{SERVICE_ICON.get(typ, '•')} #{rid} · {t} · {typ} · เข้า {fmt(row['ยอดเข้า'])} · "
+    title = (f"#{rid} · {t} · {lg.category_label(row['cat'])} · เข้า {fmt(row['ยอดเข้า'])} · "
              f"ออก {fmt(row['ยอดออก'])} · กำไร {fmt(row['กำไร'])} ฿")
     with st.expander(title):
         c1, c2 = st.columns([3, 1])
@@ -608,9 +623,10 @@ with tab2:
             st.rerun()
         f1, f2 = st.columns([1.6, 1])
         q = f1.text_input("🔍 ค้นหาทุกวัน (ID / ชื่อลูกค้า / รายละเอียด)", key="hist_q", placeholder="พิมพ์เพื่อค้นหา...")
-        ftype = f2.selectbox("ประเภท", ["ทั้งหมด"] + lg.SERVICES, key="hist_type")
+        ftype = f2.selectbox("เกม / ประเภท", ["ทั้งหมด"] + lg.CATEGORIES, key="hist_type",
+                             format_func=lambda c: c if c == "ทั้งหมด" else lg.category_label(c))
 
-        base = df_all if ftype == "ทั้งหมด" else df_all[df_all["ประเภท"] == ftype]
+        base = df_all if ftype == "ทั้งหมด" else df_all[df_all["cat"] == ftype]
 
         if q.strip():
             ql = q.strip().lower()
@@ -661,8 +677,17 @@ with tab2:
                 st.info("ยังไม่มีรายการของวันนี้ — เริ่มบันทึกได้ที่แท็บ “บันทึกรายการ”"
                         if sel == today else "ไม่มีรายการในวันนี้")
             else:
-                for _, r in day_df.sort_values(["dt", "ID"], ascending=False).iterrows():
-                    record_card(r, "d")
+                present = [c for c in lg.CATEGORIES if (day_df["cat"] == c).any()] + \
+                          [c for c in day_df["cat"].unique() if c not in lg.CATEGORIES]
+                for c in present:
+                    sub = day_df[day_df["cat"] == c]
+                    ct = lg.totals(sub)
+                    st.markdown(
+                        f'<div class="mm-day"><b style="border-left:4px solid {lg.category_color(c)};padding-left:8px">'
+                        f'{esc(lg.category_label(c))}</b><span>{ct["count"]} รายการ · เข้า {fmt(ct["in"])} · '
+                        f'ออก {fmt(ct["out"])} · กำไร {fmt(ct["profit"])} ฿</span></div>', unsafe_allow_html=True)
+                    for _, r in sub.sort_values(["dt", "ID"], ascending=False).iterrows():
+                        record_card(r, "d")
 
             # สรุปรายวันของเดือนเดียวกัน
             ref = sel or today
@@ -678,7 +703,7 @@ with tab2:
                              hide_index=True)
 
         st.divider()
-        export = df_all.drop(columns=["dt", "day", "year", "month", "_row"], errors="ignore").sort_values("ID")
+        export = df_all.drop(columns=["dt", "day", "year", "month", "_row", "cat"], errors="ignore").sort_values("ID")
         for _c in db.EXPORT_TEXT_COLS:      # กัน CSV Injection เมื่อเปิดด้วย Excel
             export[_c] = export[_c].map(db.safe_text)
         stretch(st.download_button, "📥 ดาวน์โหลดข้อมูลทั้งหมด (.csv เปิดด้วย Excel ได้)",
@@ -727,18 +752,19 @@ with tab3:
     ])
 
     mdf = df_all[(df_all["year"] == year) & (df_all["month"] == month)] if not df_all.empty else df_all
-    s_cols = st.columns(3)
-    for col, svc in zip(s_cols, lg.SERVICES):
-        t = lg.totals(mdf[mdf["ประเภท"] == svc] if not mdf.empty else None)
-        col.markdown(
-            f'<div class="mm-svc" style="border-top:3px solid {SERVICE_ACC[svc]}">'
-            f'<div class="t">{SERVICE_ICON[svc]} {svc}</div>'
-            f'<div class="r"><span>รายการ</span><span>{t["count"]}</span></div>'
-            f'<div class="r"><span>เงินเข้า</span><span>{fmt(t["in"])} ฿</span></div>'
-            f'<div class="r"><span>เงินออก</span><span>{fmt(t["out"])} ฿</span></div>'
-            f'<div class="r p"><span>กำไร</span><span>{fmt(t["profit"])} ฿</span></div></div>',
-            unsafe_allow_html=True,
-        )
+    for i in range(0, len(lg.CATEGORIES), 3):
+        chunk = lg.CATEGORIES[i:i + 3]
+        for col, cat in zip(st.columns(3), chunk):
+            t = lg.totals(mdf[mdf["cat"] == cat] if not mdf.empty else None)
+            col.markdown(
+                f'<div class="mm-svc" style="border-top:3px solid {lg.category_color(cat)};margin-bottom:10px">'
+                f'<div class="t">{esc(lg.category_label(cat))}</div>'
+                f'<div class="r"><span>รายการ</span><span>{t["count"]}</span></div>'
+                f'<div class="r"><span>เงินเข้า</span><span>{fmt(t["in"])} ฿</span></div>'
+                f'<div class="r"><span>เงินออก</span><span>{fmt(t["out"])} ฿</span></div>'
+                f'<div class="r p"><span>กำไร</span><span>{fmt(t["profit"])} ฿</span></div></div>',
+                unsafe_allow_html=True,
+            )
 
     st.divider()
     ytot = {"in": ms["in"].sum(), "out": ms["out"].sum(), "profit": ms["profit"].sum(), "count": int(ms["count"].sum())}
@@ -776,16 +802,27 @@ with tab3:
     except Exception:
         st.bar_chart(ms.set_index("label")["profit"])
 
+    ydf = df_all[df_all["year"] == year] if not df_all.empty else df_all
+    piv = ydf.pivot_table(index="month", columns="cat", values="กำไร", aggfunc="sum", fill_value=0.0) \
+        if not ydf.empty else pd.DataFrame()
+
+    def cat_profit(m, c):
+        return float(piv.loc[m, c]) if (m in piv.index and c in piv.columns) else 0.0
+
     table = pd.DataFrame({
         "เดือน": ms["month"].map(lambda m: lg.th_month(year, m)),
         "รายการ": ms["count"],
         "เงินเข้า": ms["in"], "เงินออก": ms["out"], "กำไร": ms["profit"],
     })
-    total_row = pd.DataFrame([{"เดือน": "รวมทั้งปี", "รายการ": ytot["count"], "เงินเข้า": ytot["in"],
-                               "เงินออก": ytot["out"], "กำไร": ytot["profit"]}])
-    table = pd.concat([table, total_row], ignore_index=True)
-    st.dataframe(table.style.format({"เงินเข้า": "{:,.2f}", "เงินออก": "{:,.2f}", "กำไร": "{:,.2f}"}),
-                 hide_index=True, height=490)
+    for c in lg.CATEGORIES:
+        table[f"กำไร · {c}"] = [cat_profit(m, c) for m in ms["month"]]
+    total_row = {"เดือน": "รวมทั้งปี", "รายการ": ytot["count"], "เงินเข้า": ytot["in"],
+                 "เงินออก": ytot["out"], "กำไร": ytot["profit"]}
+    for c in lg.CATEGORIES:
+        total_row[f"กำไร · {c}"] = float(table[f"กำไร · {c}"].sum())
+    table = pd.concat([table, pd.DataFrame([total_row])], ignore_index=True)
+    money_cols = [c for c in table.columns if c not in ("เดือน", "รายการ")]
+    st.dataframe(table.style.format({c: "{:,.2f}" for c in money_cols}), hide_index=True, height=490)
 
     b1, b2 = st.columns(2)
     with b1:
@@ -795,14 +832,24 @@ with tab3:
     with b2:
         if stretch(st.button, "📤 อัปเดตแท็บ “สรุปรายเดือน” ใน Google Sheets",
                    help="เขียนตารางสรุป 12 เดือนของทุกปีลงแท็บแยก ใช้คิดภาษีได้ทันที"):
-            rows_out = [["ปี (ค.ศ.)", "ปี (พ.ศ.)", "เดือน", "จำนวนรายการ", "เงินเข้า", "เงินออก", "กำไร"]]
+            rows_out = [["ปี (ค.ศ.)", "ปี (พ.ศ.)", "เดือน", "จำนวนรายการ", "เงินเข้า", "เงินออก", "กำไร"] + [f"กำไร · {c}" for c in lg.CATEGORIES]]
             for y in sorted(years):
                 ys = lg.monthly_summary(df_all, y)
+                ydf_y = df_all[df_all["year"] == y] if not df_all.empty else df_all
+                pv = ydf_y.pivot_table(index="month", columns="cat", values="กำไร", aggfunc="sum", fill_value=0.0) \
+                    if not ydf_y.empty else pd.DataFrame()
+
+                def cp(m, c):
+                    return round(float(pv.loc[m, c]), 2) if (m in pv.index and c in pv.columns) else 0.0
+
                 for _, r in ys.iterrows():
-                    rows_out.append([y, y + 543, lg.TH_MONTHS_FULL[int(r["month"]) - 1], int(r["count"]),
-                                     round(float(r["in"]), 2), round(float(r["out"]), 2), round(float(r["profit"]), 2)])
+                    mo = int(r["month"])
+                    rows_out.append([y, y + 543, lg.TH_MONTHS_FULL[mo - 1], int(r["count"]),
+                                     round(float(r["in"]), 2), round(float(r["out"]), 2), round(float(r["profit"]), 2)]
+                                    + [cp(mo, c) for c in lg.CATEGORIES])
                 rows_out.append([y, y + 543, "รวมทั้งปี", int(ys["count"].sum()), round(float(ys["in"].sum()), 2),
-                                 round(float(ys["out"].sum()), 2), round(float(ys["profit"].sum()), 2)])
+                                 round(float(ys["out"].sum()), 2), round(float(ys["profit"].sum()), 2)]
+                                + [round(sum(cp(m, c) for m in range(1, 13)), 2) for c in lg.CATEGORIES])
             if db.write_monthly_summary(rows_out):
                 st.success(f"✅ อัปเดตแท็บ “{db.MONTHLY_SHEET}” แล้ว")
 
