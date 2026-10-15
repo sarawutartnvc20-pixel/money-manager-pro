@@ -345,6 +345,7 @@ with tab1:
             st.session_state.setdefault(K("income"), 0.0)
             st.session_state.setdefault(K("out_amount"), 0.0)
             sel_extras = []
+            topup = 0.0          # ค่าเสริมที่ลูกค้าโอนเพิ่ม (ลืมเขียนโน๊ต) -> บวกเข้ากำไร
             include_fee = False
             exchange_rate = 0
             out_amount = 0.0
@@ -367,12 +368,14 @@ with tab1:
                 for ecol, (xk, xlabel, xamt) in zip(ecols, G.extras):
                     if ecol.checkbox(f"{xlabel} (+{fmt(xamt)})", key=K(f"x_{game}_{xk}")):
                         sel_extras.append((xlabel, xamt))
+                        if xk in lg.TOPUP_EXTRAS:
+                            topup += xamt
                 out_amount = st.number_input("💸 ยอดโอนออกจริง (ใส่ 0 ถ้ายังไม่ได้โอน ระบบจะคำนวณให้)",
                                              min_value=0.0, step=10.0, format="%.2f", key=K("out_amount"))
                 note = st.text_input("📌 ชื่อลูกค้า / รหัสไอดี", key=K("note"), max_chars=200,
                                      placeholder=f"เช่น {game} บัญชีคุณบาส")
                 calc = lg.compute_middleman(income, sum(a for _, a in sel_extras), include_fee,
-                                            out_amount, game)
+                                            out_amount, game, topup)
 
             elif service == "การแลกไอดี":
                 exchange_rate = st.radio("เรทค่าแลกไอดี", list(G.exchange_rates), horizontal=True,

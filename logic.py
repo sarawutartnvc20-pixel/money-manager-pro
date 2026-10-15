@@ -20,6 +20,7 @@ TZ = ZoneInfo("Asia/Bangkok")
 
 YOK_FEE = 40.0               # ค่าโยกเฟส/โยกเมล FC Mobile (ไม่รวมค่ากลาง)
 NO_NOTE_FEE = 5.0            # ลืมเขียนโน๊ต
+TOPUP_EXTRAS = ("nonote",)   # ค่าบริการเสริมที่ลูกค้าโอนเพิ่มแยกจากยอดหลัก -> บวกเข้ายอดเข้า+กำไร
 INF = float("inf")
 
 
@@ -161,23 +162,31 @@ def extras_of(is_yok: bool, is_no_note: bool) -> float:
 
 
 def compute_middleman(income: float, extras: float, includes_fee: bool,
-                      actual_out: float | None = None, game: str = DEFAULT_GAME) -> Calc:
-    """extras = ผลรวมค่าบริการเสริมที่ติ๊กไว้ (โยก/โน๊ต/วอเลท ฯลฯ)"""
-    fr = calc_middleman_fee(income, extras, includes_fee, game)
-    expected_profit = fr.base_fee + extras
-    expected_expense = max(0.0, income - expected_profit)
+                      actual_out: float | None = None, game: str = DEFAULT_GAME,
+                      topup: float = 0.0) -> Calc:
+    """extras = ผลรวมค่าบริการเสริมที่ติ๊กไว้ (โยก/โน๊ต/วอเลท ฯลฯ)
+    topup  = ส่วนของ extras ที่ลูกค้า "โอนเพิ่มแยกต่างหาก" นอกเหนือจากยอดเงินเข้าที่กรอก
+             (เช่น ลืมเขียนโน๊ต -> ลูกค้าโอนมาเพิ่ม 5 บาท) จะถูกบวกเข้าทั้งยอดเข้าและกำไร
+    """
+    topup = min(float(topup or 0), float(extras or 0))
+    in_slip = float(extras or 0) - topup          # extras ที่อยู่ในยอดเงินเข้าที่กรอกอยู่แล้ว
+    total_income = float(income or 0) + topup     # ยอดเข้ารวมที่ร้านได้รับจริง
 
-    other = calc_middleman_fee(income, extras, not includes_fee, game)
+    fr = calc_middleman_fee(income, in_slip, includes_fee, game)
+    expected_profit = fr.base_fee + extras
+    expected_expense = max(0.0, total_income - expected_profit)
+
+    other = calc_middleman_fee(income, in_slip, not includes_fee, game)
     other_profit = other.base_fee + extras
 
-    c = Calc(income=income, expense=expected_expense, profit=expected_profit,
+    c = Calc(income=total_income, expense=expected_expense, profit=expected_profit,
              base_fee=fr.base_fee, extra_fee=extras,
              expected_profit=expected_profit, expected_expense=expected_expense,
              fee=fr, other_mode_profit=other_profit)
     if actual_out is not None and actual_out > 0:
         c.from_slip = True
         c.expense = float(actual_out)
-        c.profit = round(income - actual_out, 2)
+        c.profit = round(total_income - actual_out, 2)
         c.diff = round(c.profit - expected_profit, 2)
     return c
 
