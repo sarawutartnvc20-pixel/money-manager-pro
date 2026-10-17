@@ -20,6 +20,7 @@ TZ = ZoneInfo("Asia/Bangkok")
 
 YOK_FEE = 40.0               # ค่าโยกเฟส/โยกเมล FC Mobile (ไม่รวมค่ากลาง)
 NO_NOTE_FEE = 5.0            # ลืมเขียนโน๊ต
+LOYAL_DISCOUNT = 20.0        # ส่วนลดค่ากลางให้ลูกค้าเก่า (ติ๊กแล้วหักจากค่ากลางทันที เช่น 60 -> 40)
 TOPUP_EXTRAS = ("nonote",)   # ค่าบริการเสริมที่ลูกค้าโอนเพิ่มแยกจากยอดหลัก -> บวกเข้ายอดเข้า+กำไร
 INF = float("inf")
 
@@ -92,53 +93,70 @@ def tier_fee(price: float, game: str = DEFAULT_GAME) -> float:
 
 @dataclass
 class FeeResult:
-    base_fee: float            # ค่ากลางที่คิด
+    base_fee: float            # ค่ากลางที่คิดจริง (หลังหักส่วนลดแล้ว)
     price: float               # ยอดที่ใช้เทียบเรท (ยอดไอดี)
     ambiguous: bool = False    # ยอดตกช่วงคาบเกี่ยวระหว่าง 2 เรท
     alt_fee: float | None = None
     warning: str = ""
+    list_fee: float = 0.0      # ค่ากลางตามตารางเรท (ก่อนหักส่วนลด)
+    discount: float = 0.0      # ส่วนลดที่หักจริง
+
+
+def _charged(fee: float, discount: float) -> float:
+    """ค่ากลางที่เก็บจริง = ค่ากลางตามเรท - ส่วนลด (ไม่ติดลบ)"""
+    return max(float(fee) - float(discount or 0), 0.0)
 
 
 def calc_middleman_fee(amount: float, extras: float = 0.0, includes_fee: bool = False,
-                       game: str = DEFAULT_GAME) -> FeeResult:
+                       game: str = DEFAULT_GAME, discount: float = 0.0) -> FeeResult:
     """
     includes_fee=False  (ยอดยังไม่รวมค่ากลาง)  -> เทียบเรทจากยอดที่โอนมาตรง ๆ
                          เช่น FC Mobile โอน 1491 -> เรท 80
     includes_fee=True   (ยอดรวมค่ากลางแล้ว)   -> หักค่ากลาง (และค่าบริการเสริม) ออกก่อนแล้วค่อยเทียบเรท
                          เช่น FC Mobile โอน 1500 -> 1500-60 = 1440 ยังไม่เกิน 1490 -> เรท 60
+    discount            -> ส่วนลดลูกค้าเก่า หักจากค่ากลางที่เรทกำหนด (เช่น เรท 60 ลด 20 = เก็บ 40)
+                           ยอดไอดี = ยอดโอน - ค่ากลางที่เก็บจริง จึงยังเทียบเรทจากยอดไอดีจริงได้ถูกต้อง
     """
     g = GAMES[game]
     amount = float(amount or 0)
+    d = float(discount or 0)
+
+    def done(rate_fee, price, **kw):
+        return FeeResult(_charged(rate_fee, d), price, list_fee=float(rate_fee),
+                         discount=float(rate_fee) - _charged(rate_fee, d), **kw)
+
     if not includes_fee:
-        return FeeResult(tier_fee(amount, game), amount)
+        t = tier_fee(amount, game)
+        return done(t, amount)
 
     net = amount - float(extras or 0)
     lowest = float(g.tiers[0][1])
-    if net <= lowest:
-        return FeeResult(lowest, max(net - lowest, 0.0),
-                         warning="ยอดโอนน้อยกว่าค่ากลางขั้นต่ำ ตรวจสอบยอดอีกครั้ง")
+    if net <= _charged(lowest, d):
+        return done(lowest, max(net - _charged(lowest, d), 0.0),
+                    warning="ยอดโอนน้อยกว่าค่ากลางขั้นต่ำ ตรวจสอบยอดอีกครั้ง")
 
-    # 1) หาเรทที่ "ลงตัว" : ค่ากลาง f ที่ทำให้ tier(net - f) == f
+    # 1) หาเรทที่ "ลงตัว" : ค่ากลางตามเรท f ที่ทำให้ tier(net - (f - ส่วนลด)) == f
     for _, fee in g.tiers:
-        if tier_fee(net - fee, game) == fee:
-            return FeeResult(float(fee), net - fee)
+        price = net - _charged(fee, d)
+        if tier_fee(price, game) == fee:
+            return done(fee, price)
     if g.percent:
-        price = net / (1 + g.percent)
+        price = (net + d) / (1 + g.percent)
         if price > g.tiers[-1][0]:
-            fee = round(net - price, 2)
-            return FeeResult(fee, round(price, 2))
+            list_fee = round(price * g.percent, 2)
+            return done(list_fee, round(net - _charged(list_fee, d), 2))
 
     # 2) ยอดตกช่วงคาบเกี่ยว (เช่น FC Mobile 1,551–1,569) : ใช้เรทที่สูงกว่าเพื่อไม่ให้ร้านคิดขาด
     #    และแจ้งเตือนให้เช็กกับลูกค้า
     prev = None
     for _, fee in g.tiers:
-        if tier_fee(net - fee, game) <= fee:
-            return FeeResult(float(fee), net - fee, ambiguous=True, alt_fee=prev,
-                             warning="ยอดอยู่ช่วงคาบเกี่ยวระหว่าง 2 เรท ระบบเลือกเรทที่สูงกว่า")
+        if tier_fee(net - _charged(fee, d), game) <= fee:
+            return done(fee, net - _charged(fee, d), ambiguous=True, alt_fee=prev,
+                        warning="ยอดอยู่ช่วงคาบเกี่ยวระหว่าง 2 เรท ระบบเลือกเรทที่สูงกว่า")
         prev = float(fee)
-    fee = round(net * g.percent / (1 + g.percent), 2) if g.percent else float(g.tiers[-1][1])
-    return FeeResult(fee, round(net - fee, 2), ambiguous=True, alt_fee=prev,
-                     warning="ยอดอยู่ช่วงคาบเกี่ยวระหว่างเรท ตรวจสอบกับลูกค้า")
+    list_fee = round((net + d) * g.percent / (1 + g.percent), 2) if g.percent else float(g.tiers[-1][1])
+    return done(list_fee, round(net - _charged(list_fee, d), 2), ambiguous=True, alt_fee=prev,
+                warning="ยอดอยู่ช่วงคาบเกี่ยวระหว่างเรท ตรวจสอบกับลูกค้า")
 
 
 @dataclass
@@ -154,6 +172,7 @@ class Calc:
     diff: float | None = None     # กำไรจริง - กำไรที่ควรได้
     fee: FeeResult | None = None
     other_mode_profit: float | None = None   # กำไรถ้าคิดอีกโหมด (ไว้ช่วยแนะนำ)
+    discount: float = 0.0         # ส่วนลดลูกค้าเก่าที่หักจากค่ากลางจริง
     notes: list[str] = field(default_factory=list)
 
 
@@ -163,26 +182,27 @@ def extras_of(is_yok: bool, is_no_note: bool) -> float:
 
 def compute_middleman(income: float, extras: float, includes_fee: bool,
                       actual_out: float | None = None, game: str = DEFAULT_GAME,
-                      topup: float = 0.0) -> Calc:
+                      topup: float = 0.0, discount: float = 0.0) -> Calc:
     """extras = ผลรวมค่าบริการเสริมที่ติ๊กไว้ (โยก/โน๊ต/วอเลท ฯลฯ)
     topup  = ส่วนของ extras ที่ลูกค้า "โอนเพิ่มแยกต่างหาก" นอกเหนือจากยอดเงินเข้าที่กรอก
              (เช่น ลืมเขียนโน๊ต -> ลูกค้าโอนมาเพิ่ม 5 บาท) จะถูกบวกเข้าทั้งยอดเข้าและกำไร
+    discount = ส่วนลดลูกค้าเก่า (เช่น 20) หักจากค่ากลางทันที ส่วนค่าบริการเสริมไม่ถูกลด
     """
     topup = min(float(topup or 0), float(extras or 0))
     in_slip = float(extras or 0) - topup          # extras ที่อยู่ในยอดเงินเข้าที่กรอกอยู่แล้ว
     total_income = float(income or 0) + topup     # ยอดเข้ารวมที่ร้านได้รับจริง
 
-    fr = calc_middleman_fee(income, in_slip, includes_fee, game)
+    fr = calc_middleman_fee(income, in_slip, includes_fee, game, discount)
     expected_profit = fr.base_fee + extras
     expected_expense = max(0.0, total_income - expected_profit)
 
-    other = calc_middleman_fee(income, in_slip, not includes_fee, game)
+    other = calc_middleman_fee(income, in_slip, not includes_fee, game, discount)
     other_profit = other.base_fee + extras
 
     c = Calc(income=total_income, expense=expected_expense, profit=expected_profit,
              base_fee=fr.base_fee, extra_fee=extras,
              expected_profit=expected_profit, expected_expense=expected_expense,
-             fee=fr, other_mode_profit=other_profit)
+             fee=fr, other_mode_profit=other_profit, discount=fr.discount)
     if actual_out is not None and actual_out > 0:
         c.from_slip = True
         c.expense = float(actual_out)

@@ -370,12 +370,16 @@ with tab1:
                         sel_extras.append((xlabel, xamt))
                         if xk in lg.TOPUP_EXTRAS:
                             topup += xamt
+                loyal = st.checkbox(f"🎁 ลดราคาลูกค้าเก่า (-{fmt(lg.LOYAL_DISCOUNT)} จากค่ากลาง)",
+                                    key=K("loyal"),
+                                    help="ติ๊กแล้วระบบหักค่ากลางลงทันที เช่น ค่ากลาง 60 → เก็บ 40")
                 out_amount = st.number_input("💸 ยอดโอนออกจริง (ใส่ 0 ถ้ายังไม่ได้โอน ระบบจะคำนวณให้)",
                                              min_value=0.0, step=10.0, format="%.2f", key=K("out_amount"))
                 note = st.text_input("📌 ชื่อลูกค้า / รหัสไอดี", key=K("note"), max_chars=200,
                                      placeholder=f"เช่น {game} บัญชีคุณบาส")
                 calc = lg.compute_middleman(income, sum(a for _, a in sel_extras), include_fee,
-                                            out_amount, game, topup)
+                                            out_amount, game, topup,
+                                            lg.LOYAL_DISCOUNT if loyal else 0.0)
 
             elif service == "การแลกไอดี":
                 exchange_rate = st.radio("เรทค่าแลกไอดี", list(G.exchange_rates), horizontal=True,
@@ -412,6 +416,10 @@ with tab1:
             rows.append(f'<div class="mm-row sm"><span>ค่ากลาง · ยอดไอดี {fmt(fr.price)} '
                         f'<span class="mm-tag">{mode_txt}</span></span>'
                         f'<span>{fmt(calc.base_fee)} ฿</span></div>')
+            if calc.discount > 0:
+                rows.append(f'<div class="mm-row sm"><span>🎁 ลดลูกค้าเก่า '
+                            f'<span class="mm-tag">เรท {fmt(fr.list_fee)} → {fmt(calc.base_fee)}</span></span>'
+                            f'<span>-{fmt(calc.discount)} ฿</span></div>')
             for xlabel, xamt in sel_extras:
                 rows.append(f'<div class="mm-row sm"><span>{esc(xlabel)}</span><span>{fmt(xamt)} ฿</span></div>')
 
@@ -437,6 +445,8 @@ with tab1:
                         for xl, _k, xa in [(l, k, a) for k, l, a in G.extras]:
                             if xl not in chosen and abs(calc.diff - xa) < 0.01:
                                 hints.append(f"ส่วนต่างเท่า{xl.split(' ', 1)[-1]} {fmt(xa)} — ลืมติ๊กหรือเปล่า?")
+                        if not loyal and abs(calc.diff + lg.LOYAL_DISCOUNT) < 0.01:
+                            hints.append(f"ส่วนต่างขาดไป {fmt(lg.LOYAL_DISCOUNT)} — ลืมติ๊กลดลูกค้าเก่าหรือเปล่า?")
                         if hints:
                             msg += "<br>💡 " + "<br>💡 ".join(hints)
                         notes.append(("warn", msg))
@@ -489,6 +499,8 @@ with tab1:
                         parts = []
                         if service == "รับกลางไอดี":
                             parts.append(f"ค่ากลาง {fmt(calc.base_fee)}")
+                            if calc.discount > 0:
+                                parts.append(f"ลูกค้าเก่า ลด {fmt(calc.discount)} (จาก {fmt(calc.fee.list_fee)})")
                             if include_fee:
                                 parts.append("ยอดรวมค่ากลางแล้ว")
                         if service == "การแลกไอดี":
@@ -541,7 +553,7 @@ with tab1:
                 ex_rates = " / ".join(fmt(r) for r in gm.exchange_rates)
                 ex_extra = " · ".join(f"{l.split(' ', 1)[-1]} **+{fmt(a)}**" for _, l, a in gm.exchange_extras)
                 st.markdown(f"**{gm.icon} {gname}**\n\n| ยอดไอดี | ค่ากลาง |\n|---|---|\n" + "\n".join(lines) +
-                            f"\n\nรับกลาง: {extra_txt} (ไม่รวมค่ากลาง)"
+                            f"\n\nรับกลาง: {extra_txt} (ไม่รวมค่ากลาง) · 🎁 ลูกค้าเก่า **-{fmt(lg.LOYAL_DISCOUNT)}** จากค่ากลาง"
                             f"\n\nแลกไอดี: **{ex_rates} บาท** · {ex_extra}")
 
 
