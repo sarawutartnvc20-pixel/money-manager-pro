@@ -1,0 +1,4 @@
+/px/mi/*      https://www.myinstants.com/:splat   200
+/px/gmedia/*  https://media.giphy.com/:splat      200
+/px/yto       https://www.youtube.com/oembed      200
+/px/tto       https://www.tiktok.com/oembed       200
