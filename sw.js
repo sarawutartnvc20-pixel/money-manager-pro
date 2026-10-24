@@ -1,4 +1,4 @@
-const C = 'klipfox-v68', LIB = 'klipfox-lib';
+const C = 'klipfox-v69', LIB = 'klipfox-lib';
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(C).then((c) => c.addAll(['./', 'index.html', 'manifest.webmanifest', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png']))); self.skipWaiting(); });
 // keep the AI library (LIB) and old model downloads across app updates, so subtitles keep working offline
 self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== C && k !== LIB && k !== 'transformers-cache').map((k) => caches.delete(k))))); self.clients.claim(); });
